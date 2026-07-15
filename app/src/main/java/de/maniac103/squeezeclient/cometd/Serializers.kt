@@ -26,6 +26,31 @@ import kotlinx.serialization.descriptors.PrimitiveSerialDescriptor
 import kotlinx.serialization.descriptors.SerialDescriptor
 import kotlinx.serialization.encoding.Decoder
 import kotlinx.serialization.encoding.Encoder
+import kotlinx.serialization.json.JsonDecoder
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.intOrNull
+import kotlinx.serialization.json.jsonPrimitive
+
+// LMS's Jive display protocol allows "duration" on a displaystatus/showbriefly message to be
+// either a plain number of seconds, or an object like {"block":0,"duration":5} (block controls
+// whether the rest of the UI should wait for the message to clear). SugarCube's "creating mix"
+// popup uses the object form, which a plain Int-based model can't parse.
+object DurationOrBlockObjectSerializer : KSerializer<Int> {
+    override val descriptor: SerialDescriptor get() =
+        PrimitiveSerialDescriptor("DurationOrBlockObject", PrimitiveKind.INT)
+    override fun deserialize(decoder: Decoder): Int {
+        val jsonDecoder = decoder as? JsonDecoder ?: return decoder.decodeInt()
+        return when (val element = jsonDecoder.decodeJsonElement()) {
+            is JsonObject -> element["duration"]?.jsonPrimitive?.intOrNull ?: 0
+            is JsonPrimitive -> element.intOrNull ?: 0
+            else -> 0
+        }
+    }
+    override fun serialize(encoder: Encoder, value: Int) {
+        encoder.encodeInt(value)
+    }
+}
 
 object BooleanAsIntSerializer : KSerializer<Boolean> {
     override val descriptor: SerialDescriptor get() =

@@ -361,7 +361,7 @@ class ConnectionHelper(private val appContext: SqueezeClientApplication) {
             "\"$searchTerm\""
         }
 
-    private suspend fun fetchHomeMenu(playerId: PlayerId) =
+    internal suspend fun fetchHomeMenu(playerId: PlayerId) =
         doRequestWithResult<JiveHomeItemListResponse>(
             FetchHomeMenuRequest(playerId)
         ).asModelItems(appContext).associateBy { it.id }

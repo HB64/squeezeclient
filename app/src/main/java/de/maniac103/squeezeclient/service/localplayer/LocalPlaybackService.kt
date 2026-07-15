@@ -353,7 +353,8 @@ class LocalPlaybackService :
                     command.replayGain,
                     // In direct streaming case we need to wait for the
                     // continue packet before starting playback
-                    command.autoStart && !command.directStreaming
+                    command.autoStart && !command.directStreaming,
+                    command.pcmParams
                 )
             }
 

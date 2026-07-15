@@ -71,6 +71,7 @@
             android:exported="true">
             <intent-filter>
                 <action android:name="androidx.media3.session.MediaSessionService" />
+                <action android:name="androidx.media3.session.MediaLibraryService" />
                 <action android:name="android.media.browse.MediaBrowserService" />
             </intent-filter>
         </service>
@@ -100,7 +101,6 @@
                 <action android:name="android.intent.action.BOOT_COMPLETED" />
             </intent-filter>
         </receiver>
-
         <provider
             android:name=".CacheFileProvider"
             android:authorities="${applicationId}.cachefiles"
@@ -108,8 +108,18 @@
             android:grantUriPermissions="true">
             <meta-data
                 android:name="android.support.FILE_PROVIDER_PATHS"
-                android:resource="@xml/cache_provider_paths" />
+                android:resource="@xml/cache_provider_paths"/>
         </provider>
+
+        <provider
+            android:name=".AlbumArtFileProvider"
+            android:authorities="${applicationId}.albumart"
+            android:exported="true" />
+
+        <meta-data
+            android:name="com.google.android.gms.car.application"
+            android:resource="@xml/automotive_app_desc"/>
+
     </application>
 
 </manifest>

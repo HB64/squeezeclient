@@ -110,8 +110,20 @@ class SlimprotoSocket(prefs: SharedPreferences) {
             val autoStart: Boolean,
             val directStreaming: Boolean,
             val mimeType: String?,
-            val replayGain: Float
+            val replayGain: Float,
+            val pcmParams: PcmStreamParams? = null
         ) : CommandPacket()
+
+        // Alleen gevuld wanneer de server een kale PCM-stream aankondigt (STRM-formatbyte 'p',
+        // wat ook WAV/AIFF omvat, zie slimproto-spec). De HTTP-body heeft in dat geval geen
+        // eigen header, dus deze parameters zijn nodig om er zelf een container omheen te
+        // bouwen voordat ExoPlayer ermee overweg kan.
+        data class PcmStreamParams(
+            val sampleSizeBits: Int,
+            val sampleRateHz: Int,
+            val channels: Int,
+            val bigEndian: Boolean
+        )
         data class StreamPause(val pauseInterval: Duration?) : CommandPacket()
         data class StreamUnpause(val unpauseTimestamp: Duration) : CommandPacket()
         data object StreamStop : CommandPacket()
@@ -184,6 +196,37 @@ class SlimprotoSocket(prefs: SharedPreferences) {
         }
     }
 
+    // Waardetabellen voor het STRM-commando. De officiële slimproto-documentatie noemt hier
+    // '2' = 20-bit, maar squeezelite's eigen pcm.c (de facto-referentie waar LMS tegen test)
+    // rekent size = (c - '0' + 1) bytes, dus '2' = 3 bytes = 24-bit. We volgen squeezelite.
+    private fun decodePcmSampleSize(c: Char): Int = when (c) {
+        '0' -> 8
+        '1' -> 16
+        '2' -> 24
+        '3' -> 32
+        else -> throw IllegalArgumentException("Unexpected PCM sample size value $c")
+    }
+
+    private fun decodePcmSampleRate(c: Char): Int = when (c) {
+        '0' -> 11025
+        '1' -> 22050
+        '2' -> 32000
+        '3' -> 44100
+        '4' -> 48000
+        '5' -> 8000
+        '6' -> 12000
+        '7' -> 16000
+        '8' -> 24000
+        '9' -> 96000
+        else -> throw IllegalArgumentException("Unexpected PCM sample rate value $c")
+    }
+
+    private fun decodePcmChannels(c: Char): Int = when (c) {
+        '1' -> 1
+        '2' -> 2
+        else -> throw IllegalArgumentException("Unexpected PCM channel value $c")
+    }
+
     @OptIn(ExperimentalUnsignedTypes::class)
     private fun parseStreamPacket(buffer: ByteBuffer): CommandPacket {
         if (buffer.remaining() < 24) throw IllegalArgumentException()
@@ -195,17 +238,40 @@ class SlimprotoSocket(prefs: SharedPreferences) {
             '3' -> Pair(true, true)
             else -> throw IllegalArgumentException("Unexpected STRM auto-start value $t")
         }
+        val formatByte = buffer.get().toInt().toChar()
         @Suppress("ktlint:standard:blank-line-between-when-conditions")
-        val mimeType = when (val t = buffer.get().toInt().toChar()) {
+        val mimeType = when (formatByte) {
             'm' -> "audio/mpeg" // MP3
             'f' -> "audio/flac" // FLAC
             'o' -> "audio/ogg" // OGG
             'a' -> "audio/mp4a-latm" // AAC
+            // Kale PCM (ook WAV/AIFF): geen eigen mimeType hier, wordt via pcmParams
+            // hieronder afgehandeld door zelf een container om de data te bouwen.
+            'p' -> null
             '?' -> null
-            else -> throw IllegalArgumentException("Unexpected STRM format value $t")
+            else -> throw IllegalArgumentException("Unexpected STRM format value $formatByte")
         }
 
-        buffer.skip(4) // PCM sample size, sample rate, channels, endianness
+        // Alleen betekenisvol wanneer formatByte == 'p'; voor andere formaten worden deze
+        // bytes voor iets anders hergebruikt door de server (zie FLAC/WMA/AAC-notes in de
+        // slimproto-spec) en negeren we ze net als voorheen.
+        val pcmSampleSizeByte = buffer.get().toInt().toChar()
+        val pcmSampleRateByte = buffer.get().toInt().toChar()
+        val pcmChannelsByte = buffer.get().toInt().toChar()
+        val pcmEndiannessByte = buffer.get().toInt().toChar()
+        val pcmParams = if (formatByte == 'p') {
+            CommandPacket.PcmStreamParams(
+                sampleSizeBits = decodePcmSampleSize(pcmSampleSizeByte),
+                sampleRateHz = decodePcmSampleRate(pcmSampleRateByte),
+                channels = decodePcmChannels(pcmChannelsByte),
+                // Net als squeezelite: alleen '0' is big-endian (AIFF), al het andere
+                // (normaal '1' voor WAV) behandelen we als little-endian.
+                bigEndian = pcmEndiannessByte == '0'
+            )
+        } else {
+            null
+        }
+
         buffer.skip(4) // thresholdKb, spdifEnable, transitionPeriodSeconds, transitionType
         val flags = buffer.get()
         buffer.skip(2) // outputThresholdSeconds, reserved
@@ -255,7 +321,8 @@ class SlimprotoSocket(prefs: SharedPreferences) {
                     autostart,
                     directStreaming,
                     mimeType,
-                    replayGain
+                    replayGain,
+                    pcmParams
                 )
             }
 
@@ -284,8 +351,16 @@ class SlimprotoSocket(prefs: SharedPreferences) {
     }
 
     private suspend fun sendHello(reconnect: Boolean) {
-        val supportedFormats = listOf("mp3", "aac", "ogg", "flc")
+        // "pcm" laat LMS weten dat we kale PCM (STRM-formatbyte 'p') aankunnen, wat het een
+        // lossless-transcodeprofiel geeft i.p.v. altijd naar lossy mp3/aac te vallen. Bewust
+        // geen "aif": big-endian PCM wordt in LocalPlayer.start() nog niet gewrapt.
+        val supportedFormats = listOf("mp3", "aac", "ogg", "flc", "pcm")
         val supportedCapabilities = listOf(
+            // Model=squeezelite is geprobeerd om een ruimer transcodeprofiel (Unlimited
+            // bitrate) bij LMS te krijgen, maar dat maakte geen verschil — en zorgde er wel
+            // voor dat LMS onze eigen lokale speler niet meer kon onderscheiden van een
+            // los geïnstalleerde Squeezelite-app op hetzelfde toestel. Terug naar de eigen,
+            // herkenbare modelnaam.
             "Model=squeezeclient",
             "AccuratePlayPoints=1",
             "CanHTTPS=1"

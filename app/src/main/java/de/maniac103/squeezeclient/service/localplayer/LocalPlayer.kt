@@ -22,6 +22,8 @@ import android.media.AudioTimestamp
 import android.net.Uri
 import android.util.Log
 import androidx.annotation.OptIn
+import androidx.media3.common.AudioAttributes
+import androidx.media3.common.C
 import androidx.media3.common.MediaItem
 import androidx.media3.common.MediaMetadata
 import androidx.media3.common.PlaybackParameters
@@ -49,6 +51,8 @@ import de.maniac103.squeezeclient.extfuncs.LocalPlayerVolumeMode
 import de.maniac103.squeezeclient.extfuncs.httpClient
 import de.maniac103.squeezeclient.extfuncs.localPlayerVolumeMode
 import de.maniac103.squeezeclient.extfuncs.prefs
+import java.nio.ByteBuffer
+import java.nio.ByteOrder
 import kotlin.math.roundToInt
 import kotlin.time.Duration
 import kotlin.time.Duration.Companion.seconds
@@ -137,6 +141,7 @@ class LocalPlayer(
             .setMediaSourceFactory(DefaultMediaSourceFactory(dataSourceFactory))
             .setRenderersFactory(AudioSinkOverridingFactory(context))
             .setDeviceVolumeControlEnabled(true)
+            .setAudioAttributes(AudioAttributes.DEFAULT, /* handleAudioFocus = */ true)
             .build()
         player.addListener(this)
         if (BuildConfig.DEBUG) {
@@ -160,16 +165,30 @@ class LocalPlayer(
         mimeType: String?,
         headers: Map<String, String>,
         replayGain: Float,
-        autoStart: Boolean
+        autoStart: Boolean,
+        pcmParams: SlimprotoSocket.CommandPacket.PcmStreamParams? = null
     ) {
+        // Kale PCM heeft geen eigen container/header - LMS levert alleen de ruwe samples.
+        // We plakken er zelf een minimale WAV-header voor zodat ExoPlayer's WavExtractor de
+        // stream herkent. Big-endian (AIFF-achtige) PCM wordt hier bewust nog niet ondersteund:
+        // een WAV-container veronderstelt little-endian samples.
+        val usePcmWrapper = pcmParams != null && !pcmParams.bigEndian
+        if (pcmParams != null && pcmParams.bigEndian) {
+            Log.w(TAG, "Big-endian PCM-stream aangeboden, WAV-wrapping wordt hiervoor overgeslagen")
+        }
+        val effectiveMimeType = if (usePcmWrapper) "audio/wav" else mimeType
         val mediaItem = MediaItem.Builder()
             .setUri(uri)
-            .setMimeType(mimeType)
+            .setMimeType(effectiveMimeType)
             .build()
         val dataSourceFactoryForHeaders = DataSource.Factory {
             val dataSource = dataSourceFactory.createDataSource()
             headers.forEach { (k, v) -> dataSource.setRequestProperty(k, v) }
-            dataSource
+            if (usePcmWrapper && pcmParams != null) {
+                WavHeaderPrependingDataSource(dataSource, pcmParams)
+            } else {
+                dataSource
+            }
         }
         val mediaSource = ProgressiveMediaSource.Factory(dataSourceFactoryForHeaders)
             .createMediaSource(mediaItem)
@@ -350,5 +369,74 @@ class LocalPlayer(
 
     companion object {
         private const val TAG = "LocalPlayer"
+    }
+}
+
+// Plakt een synthetische 44-byte WAV-header voor de kale PCM-bytestream van de upstream
+// DataSource, zodat ExoPlayer's eigen WavExtractor de audio herkent en afspeelt zonder dat we
+// een eigen Extractor hoeven te schrijven. De grootte-velden staan op "onbekend" (0xFFFFFFFF),
+// de gangbare conventie voor WAV-streams waarvan de totale lengte niet vooraf bekend is.
+@UnstableApi
+private class WavHeaderPrependingDataSource(
+    private val upstream: DataSource,
+    params: SlimprotoSocket.CommandPacket.PcmStreamParams
+) : DataSource {
+    private val header = buildWavHeader(params)
+    private var headerBytesRemaining = header.size
+
+    override fun addTransferListener(transferListener: TransferListener) {
+        upstream.addTransferListener(transferListener)
+    }
+
+    override fun open(dataSpec: DataSpec): Long {
+        headerBytesRemaining = header.size
+        val upstreamLength = upstream.open(dataSpec)
+        return if (upstreamLength == C.LENGTH_UNSET.toLong()) {
+            C.LENGTH_UNSET.toLong()
+        } else {
+            header.size.toLong() + upstreamLength
+        }
+    }
+
+    override fun read(buffer: ByteArray, offset: Int, length: Int): Int {
+        if (headerBytesRemaining > 0) {
+            val headerOffset = header.size - headerBytesRemaining
+            val toCopy = minOf(length, headerBytesRemaining)
+            System.arraycopy(header, headerOffset, buffer, offset, toCopy)
+            headerBytesRemaining -= toCopy
+            return toCopy
+        }
+        return upstream.read(buffer, offset, length)
+    }
+
+    override fun getUri(): Uri? = upstream.uri
+
+    override fun close() {
+        upstream.close()
+    }
+
+    companion object {
+        fun buildWavHeader(params: SlimprotoSocket.CommandPacket.PcmStreamParams): ByteArray {
+            val channels = params.channels
+            val sampleRate = params.sampleRateHz
+            val bitsPerSample = params.sampleSizeBits
+            val blockAlign = channels * (bitsPerSample / 8)
+            val byteRate = sampleRate * blockAlign
+            return ByteBuffer.allocate(44).order(ByteOrder.LITTLE_ENDIAN).apply {
+                put("RIFF".toByteArray(Charsets.US_ASCII))
+                putInt(-1) // 0xFFFFFFFF: onbekende totale grootte
+                put("WAVE".toByteArray(Charsets.US_ASCII))
+                put("fmt ".toByteArray(Charsets.US_ASCII))
+                putInt(16) // Subchunk1Size voor PCM
+                putShort(1) // AudioFormat = PCM (integer)
+                putShort(channels.toShort())
+                putInt(sampleRate)
+                putInt(byteRate)
+                putShort(blockAlign.toShort())
+                putShort(bitsPerSample.toShort())
+                put("data".toByteArray(Charsets.US_ASCII))
+                putInt(-1) // 0xFFFFFFFF: onbekende datagrootte (streaming)
+            }.array()
+        }
     }
 }

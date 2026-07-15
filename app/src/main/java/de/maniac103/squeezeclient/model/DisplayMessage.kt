@@ -18,6 +18,7 @@
 package de.maniac103.squeezeclient.model
 
 import de.maniac103.squeezeclient.cometd.BooleanAsIntSerializer
+import de.maniac103.squeezeclient.cometd.DurationOrBlockObjectSerializer
 import kotlin.time.Duration.Companion.milliseconds
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
@@ -27,6 +28,7 @@ import kotlinx.serialization.json.JsonPrimitive
 data class DisplayMessage(
     val type: MessageType? = null,
     @SerialName("duration")
+    @Serializable(with = DurationOrBlockObjectSerializer::class)
     private val internalDuration: Int? = null,
     @SerialName("is-remote")
     @Serializable(with = BooleanAsIntSerializer::class)
@@ -34,7 +36,7 @@ data class DisplayMessage(
     @SerialName("play-mode")
     val playMode: String? = null,
     @SerialName("text")
-    val internalText: List<String?>,
+    private val internalText: List<String?>? = null,
     @SerialName("icon-id")
     // may be string or number
     private val internalIconId: JsonPrimitive? = null,
@@ -44,7 +46,7 @@ data class DisplayMessage(
 ) : ArtworkItem {
     override val iconId: String? get() = internalIconId?.content
     val duration get() = internalDuration?.milliseconds
-    val text get() = internalText.filterNotNull()
+    val text get() = internalText.orEmpty().filterNotNull()
 
     @Serializable
     @Suppress("unused")

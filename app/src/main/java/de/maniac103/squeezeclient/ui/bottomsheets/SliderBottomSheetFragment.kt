@@ -43,7 +43,7 @@ class SliderBottomSheetFragment :
         content.slider.apply {
             valueFrom = slider.min.toFloat()
             valueTo = slider.max.toFloat()
-            value = slider.initialValue.toFloat()
+            value = slider.initialValue.toFloat().coerceIn(valueFrom, valueTo)
             setLabelFormatter { value -> value.roundToInt().toString() }
             // TODO: icons
             addOnSliderTouchListener(this@SliderBottomSheetFragment)
