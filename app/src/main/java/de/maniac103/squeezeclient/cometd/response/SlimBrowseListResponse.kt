@@ -219,12 +219,16 @@ fun Json.combineItemAndBaseActions(item: JsonObject, base: JsonObject?): JiveAct
         choiceActions != null &&
         choiceStrings != null &&
         selectedIndex != null &&
+        choiceActions.isNotEmpty() &&
         choiceActions.size == choiceStrings.size
     ) {
         val choices = choiceActions.mapIndexed { i, action ->
             JiveActions.Choice(choiceStrings[i], action)
         }
-        JiveActions.Choices(choices, selectedIndex - 1)
+        // selectedIndex from the server is 1-based, but can be 0 (or otherwise out of range)
+        // when the server considers no choice currently selected. Clamp instead of trusting it
+        // blindly, since an unclamped -1 (or out-of-bounds) index crashes the item list rendering.
+        JiveActions.Choices(choices, (selectedIndex - 1).coerceIn(choices.indices))
     } else {
         null
     }

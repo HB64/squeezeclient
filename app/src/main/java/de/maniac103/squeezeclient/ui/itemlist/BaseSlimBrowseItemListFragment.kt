@@ -117,8 +117,16 @@ abstract class BaseSlimBrowseItemListFragment :
             }
 
             actions.choices != null -> {
-                showChoices(item)
-                null
+                val choices = actions.choices
+                if (choices.items.size == 1) {
+                    // A single-choice list is really just a momentary action button (this
+                    // matches SqueezePlay's behavior), not a picker - trigger it directly
+                    // instead of showing a chooser with only one option to pick from.
+                    listener.onHandleDoOrGoAction(choices.items[0].action, false, item, null)
+                } else {
+                    showChoices(item)
+                    null
+                }
             }
 
             actions.checkbox != null -> {

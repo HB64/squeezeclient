@@ -17,15 +17,12 @@
 
 package de.maniac103.squeezeclient.ui.itemlist
 
-import android.graphics.Color
 import android.view.LayoutInflater
 import android.view.ViewGroup
 import android.widget.TextView
-import androidx.core.graphics.drawable.toDrawable
 import androidx.core.view.forEach
 import androidx.core.view.isVisible
 import androidx.recyclerview.widget.RecyclerView
-import de.maniac103.squeezeclient.BuildConfig
 import de.maniac103.squeezeclient.R
 import de.maniac103.squeezeclient.databinding.ListItemSlimbrowseBinding
 import de.maniac103.squeezeclient.model.JiveHomeMenuItem
@@ -74,12 +71,8 @@ class JiveHomeItemListAdapter(items: List<JiveHomeMenuItem> = listOf()) :
             binding.subtext.isVisible = !item.subText.isNullOrEmpty()
             item.choices?.let { choiceLabel.text = it.items[it.selectedIndex].title }
 
-            val iconResId = ICON_MAPPING[item.id]
-            when {
-                iconResId != null -> binding.icon.setImageResource(iconResId)
-                BuildConfig.DEBUG -> binding.icon.setImageDrawable(Color.RED.toDrawable())
-                else -> binding.icon.setImageDrawable(null)
-            }
+            val iconResId = ICON_MAPPING[item.id] ?: R.drawable.ic_disc_24dp
+            binding.icon.setImageResource(iconResId)
         }
 
         fun updateBusyState(busy: Boolean) {
