@@ -91,7 +91,7 @@ class LocalPlaybackService :
     override fun onCreate() {
         dispatcher.onServicePreSuperOnCreate()
         super.onCreate()
-        slimproto = SlimprotoSocket(prefs)
+        slimproto = SlimprotoSocket(this, prefs)
         player = LocalPlayer(
             this,
             onPlaybackReady = { buffering -> onPlaybackReady(buffering) },

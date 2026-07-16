@@ -17,7 +17,10 @@
 
 package de.maniac103.squeezeclient.service.localplayer
 
+import android.content.Context
 import android.content.SharedPreferences
+import android.net.ConnectivityManager
+import android.net.NetworkCapabilities
 import android.net.Uri
 import android.util.Log
 import androidx.core.net.toUri
@@ -43,10 +46,12 @@ import okio.buffer
 import okio.sink
 import okio.source
 
-class SlimprotoSocket(prefs: SharedPreferences) {
+class SlimprotoSocket(context: Context, prefs: SharedPreferences) {
     val host: String? = prefs.serverConfig?.url?.host
     private val deviceIdentifier: UUID = prefs.getOrCreateDeviceIdentifier()
     private var socket: SocketHolder? = null
+    private val connectivityManager =
+        context.applicationContext.getSystemService(ConnectivityManager::class.java)
 
     private val packetParsers: Map<String, (ByteBuffer) -> CommandPacket> = mapOf(
         "aude" to this::parseAudioEnablePacket,
@@ -350,11 +355,25 @@ class SlimprotoSocket(prefs: SharedPreferences) {
         }
     }
 
+    private fun isOnWifi(): Boolean {
+        val network = connectivityManager?.activeNetwork ?: return false
+        val capabilities = connectivityManager.getNetworkCapabilities(network) ?: return false
+        return capabilities.hasTransport(NetworkCapabilities.TRANSPORT_WIFI)
+    }
+
     private suspend fun sendHello(reconnect: Boolean) {
         // "pcm" laat LMS weten dat we kale PCM (STRM-formatbyte 'p') aankunnen, wat het een
         // lossless-transcodeprofiel geeft i.p.v. altijd naar lossy mp3/aac te vallen. Bewust
         // geen "aif": big-endian PCM wordt in LocalPlayer.start() nog niet gewrapt.
-        val supportedFormats = listOf("mp3", "aac", "ogg", "flc", "pcm")
+        // Alleen aanbieden op WiFi: rauwe PCM is ~1.4 Mbps (16-bit/44.1kHz stereo), zo'n 4-5x
+        // zoveel als een gecomprimeerde stream. Op mobiele data (bijv. onderweg via VPN naar
+        // een thuis-LMS-server) leidt dat tot haperingen/dropouts - dan liever automatisch
+        // terugvallen op de gecomprimeerde profielen zoals voorheen.
+        val supportedFormats = if (isOnWifi()) {
+            listOf("mp3", "aac", "ogg", "flc", "pcm")
+        } else {
+            listOf("mp3", "aac", "ogg", "flc")
+        }
         val supportedCapabilities = listOf(
             // Model=squeezelite is geprobeerd om een ruimer transcodeprofiel (Unlimited
             // bitrate) bij LMS te krijgen, maar dat maakte geen verschil — en zorgde er wel
