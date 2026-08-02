@@ -1,0 +1,6 @@
+- Fix seeking in FLAC files in local player (#39)
+- Reduce gap between tracks in local player (#46)
+- Add a setting for volume control step size (#45)
+- Fix Squeezebox renaming action
+- Improve local player buffer fill level reporting
+- Misc. bug fixes

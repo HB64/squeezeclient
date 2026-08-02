@@ -41,11 +41,14 @@ import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.analytics.AnalyticsListener
 import androidx.media3.exoplayer.audio.AudioTrackAudioOutputProvider
 import androidx.media3.exoplayer.audio.DefaultAudioSink
+import androidx.media3.exoplayer.source.BundledExtractorsAdapter
 import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
 import androidx.media3.exoplayer.source.LoadEventInfo
 import androidx.media3.exoplayer.source.MediaLoadData
+import androidx.media3.exoplayer.source.ProgressiveMediaExtractor
 import androidx.media3.exoplayer.source.ProgressiveMediaSource
 import androidx.media3.exoplayer.util.EventLogger
+import androidx.media3.extractor.DefaultExtractorsFactory
 import de.maniac103.squeezeclient.BuildConfig
 import de.maniac103.squeezeclient.extfuncs.LocalPlayerVolumeMode
 import de.maniac103.squeezeclient.extfuncs.httpClient
@@ -63,10 +66,12 @@ import okhttp3.Response
 class LocalPlayer(
     context: Context,
     private val onPlaybackReady: (buffering: Boolean) -> Unit = {},
+    private val onPlaybackAdvancedToNextTrack: () -> Unit = {},
     private val onPauseStateChanged: (paused: Boolean) -> Unit = {},
     private val onPlaybackEnded: (streamEnded: Boolean) -> Unit = {},
     private val onPlaybackError: () -> Unit = {},
     private val onDecoderLoadFinished: () -> Unit = {},
+    onDecodingFinished: () -> Unit = {},
     onAudioStreamFlushed: () -> Unit = {},
     private val onHeadersReceived: (response: Response) -> Unit = {},
     private val onMetadataReceived: (title: CharSequence, artworkUri: Uri?) -> Unit = { _, _ -> }
@@ -75,6 +80,7 @@ class LocalPlayer(
     private val dataSourceFactory: HttpDataSource.Factory
     private val player: ExoPlayer
     private var lastPlaybackState = Player.STATE_IDLE
+    private val flacMetadataCache = FlacMetadataCache()
 
     @UnstableApi
     private lateinit var transferListener: NetworkTransferListener
@@ -109,7 +115,10 @@ class LocalPlayer(
     private var lastSavedDeviceVolume: Int? = null
 
     @UnstableApi
-    private val audioProcessor = LocalPlayerAudioProcessor(onAudioStreamFlushed)
+    private val audioProcessor = LocalPlayerAudioProcessor(
+        resetCallback = onAudioStreamFlushed,
+        endOfStreamCallback = onDecodingFinished
+    )
     private val audioOutputProvider = LocalPlayerAudioOutputProvider(
         AudioTrackAudioOutputProvider.Builder(context).build()
     )
@@ -160,7 +169,7 @@ class LocalPlayer(
     }
 
     @OptIn(UnstableApi::class)
-    fun start(
+    fun play(
         uri: Uri,
         mimeType: String?,
         headers: Map<String, String>,
@@ -190,16 +199,30 @@ class LocalPlayer(
                 dataSource
             }
         }
-        val mediaSource = ProgressiveMediaSource.Factory(dataSourceFactoryForHeaders)
-            .createMediaSource(mediaItem)
+
+        val extractorFactory: ProgressiveMediaExtractor.Factory = { _ ->
+            if (mimeType == null) {
+                BundledExtractorsAdapter(DefaultExtractorsFactory())
+            } else {
+                LocalPlayerMediaExtractor(mimeType, flacMetadataCache)
+            }
+        }
+
+        val mediaSourceFactory = ProgressiveMediaSource.Factory(
+            dataSourceFactoryForHeaders,
+            extractorFactory
+        )
+        val mediaSource = mediaSourceFactory.createMediaSource(mediaItem)
 
         currentReplayGain = replayGain
 
-        player.stop()
-        player.setMediaSource(mediaSource)
-        player.volume = playerInternalVolume * replayGain
-        player.prepare()
-        player.playWhenReady = autoStart
+        if (player.playbackState == Player.STATE_IDLE) {
+            player.setMediaSource(mediaSource)
+            player.prepare()
+            player.playWhenReady = autoStart
+        } else {
+            player.addMediaSource(mediaSource)
+        }
     }
 
     fun stop() {
@@ -251,9 +274,27 @@ class LocalPlayer(
         return bufferedDurationMs to maxBufferDurationMs
     }
 
+    override fun onMediaItemTransition(mediaItem: MediaItem?, reason: Int) {
+        Log.d(TAG, "onMediaItemTransition(${mediaItem?.mediaId}, $reason)")
+        super.onMediaItemTransition(mediaItem, reason)
+        if (
+            reason == Player.MEDIA_ITEM_TRANSITION_REASON_AUTO ||
+            reason == Player.MEDIA_ITEM_TRANSITION_REASON_PLAYLIST_CHANGED
+        ) {
+            player.volume = playerInternalVolume * currentReplayGain
+        }
+        if (reason == Player.MEDIA_ITEM_TRANSITION_REASON_AUTO && readyForPlayback && !paused) {
+            onPlaybackAdvancedToNextTrack()
+        }
+    }
+
     override fun onPlaybackStateChanged(playbackState: Int) {
         super.onPlaybackStateChanged(playbackState)
-        Log.d(TAG, "Playback state change $lastPlaybackState -> $playbackState")
+        Log.d(
+            TAG,
+            "Playback state change $lastPlaybackState -> $playbackState",
+            player.playerError?.takeIf { playbackState == Player.STATE_IDLE }
+        )
         when (playbackState) {
             Player.STATE_BUFFERING, Player.STATE_READY ->
                 onPlaybackReady(playbackState == Player.STATE_BUFFERING)
