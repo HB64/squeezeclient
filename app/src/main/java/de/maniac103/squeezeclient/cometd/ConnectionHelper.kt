@@ -107,6 +107,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.plus
 import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.coroutines.yield
+import kotlinx.serialization.SerializationException
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.decodeFromJsonElement
@@ -511,14 +512,26 @@ class ConnectionHelper(private val appContext: SqueezeClientApplication) {
                 )
             },
             {
-                connectionHelper.doRequestWithResult<PlayerStatusResponse>(
-                    PlayerStatusRequest(playerId)
-                ).asModelStatus(connectionHelper.json)
+                // De server kan i.p.v. een echte status ook een foutobject teruggeven, bv.
+                // {"error":"invalid player"} als de speler-ID niet (meer) bestaat - dat gebeurt
+                // o.a. als de local player net is uitgeschakeld terwijl er nog naar zijn status
+                // werd gevraagd. Zonder deze afvanging crasht het decoderen daarvan de hele app.
+                try {
+                    connectionHelper.doRequestWithResult<PlayerStatusResponse>(
+                        PlayerStatusRequest(playerId)
+                    ).asModelStatus(connectionHelper.json)
+                } catch (e: SerializationException) {
+                    null
+                }
             },
             CometdClient.Channels.playerStatus(clientId, playerId),
             { _, msgData ->
                 val json = connectionHelper.json
-                json.decodeFromJsonElement<PlayerStatusResponse>(msgData).asModelStatus(json)
+                try {
+                    json.decodeFromJsonElement<PlayerStatusResponse>(msgData).asModelStatus(json)
+                } catch (e: SerializationException) {
+                    null
+                }
             }
         )
 

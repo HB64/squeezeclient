@@ -18,6 +18,7 @@
 package de.maniac103.squeezeclient.cometd.response
 
 import de.maniac103.squeezeclient.cometd.BooleanAsIntSerializer
+import de.maniac103.squeezeclient.cometd.OffsetAsStringSerializer
 import de.maniac103.squeezeclient.cometd.PlayerIdListAsStringSerializer
 import de.maniac103.squeezeclient.cometd.PlayerIdSerializer
 import de.maniac103.squeezeclient.cometd.TimestampAsInstantSerializer
@@ -44,6 +45,7 @@ import kotlinx.serialization.json.decodeFromJsonElement
 data class PlayerStatusResponse(
     @SerialName("mode")
     val state: PlayerStatus.PlayState,
+    @Serializable(with = OffsetAsStringSerializer::class)
     val offset: String? = null,
     val count: Int,
     @SerialName("item_loop")

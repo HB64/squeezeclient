@@ -14,6 +14,14 @@
 
 -dontobfuscate
 
+# Strip verbose/debug logging from release builds. Log.w/Log.e stay in, since those
+# generally carry real exceptions/diagnostics worth keeping around production issues.
+-assumenosideeffects class android.util.Log {
+    public static int v(...);
+    public static int d(...);
+    public static int i(...);
+}
+
 # see https://github.com/androidx/constraintlayout/issues/428
 -keepclassmembers class * extends androidx.constraintlayout.motion.widget.Key {
   public <init>();

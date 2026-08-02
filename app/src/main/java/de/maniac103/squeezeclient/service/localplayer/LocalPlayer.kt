@@ -206,6 +206,18 @@ class LocalPlayer(
         player.stop()
     }
 
+    // Alleen aanroepen bij het echt afsluiten van de service (niet bij het wisselen naar een
+    // volgende track, daarvoor is stop() bedoeld). ExoPlayer.stop() laat de speler en zijn
+    // audiotrack/native audioresources bestaan en geeft audiofocus niet gegarandeerd deterministisch
+    // vrij; release() doet dat wel. Zonder dit kon een net uitgezette lokale speler nog even
+    // (deels) audiofocus vasthouden of, andersom, een net binnengekomen slimproto-commando de
+    // nog niet volledig afgebroken speler weer laten starten - wat leek op willekeurig dubbele
+    // audio of juist stilte in combinatie met een andere speler (bv. Squeezelite) op hetzelfde
+    // toestel.
+    fun release() {
+        player.release()
+    }
+
     @OptIn(UnstableApi::class)
     fun skipAhead(duration: Duration) {
         audioProcessor.skipAhead(duration)

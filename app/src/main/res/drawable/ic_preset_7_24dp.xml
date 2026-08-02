@@ -1,4 +1,3 @@
-<?xml version="1.0" encoding="utf-8"?>
 <!--
   ~ This file is part of Squeeze Client, an Android client for the LMS music server.
   ~ Copyright (c) 2024 Danny Baumann
@@ -16,16 +15,16 @@
   ~
   -->
 
-<menu xmlns:android="http://schemas.android.com/apk/res/android"
-    xmlns:app="http://schemas.android.com/apk/res-auto">
-    <group android:id="@+id/menu_players" />
-    <item
-        android:id="@+id/manage_players"
-        android:orderInCategory="101"
-        android:title="@string/menu_manage_players" />
-    <item
-        android:id="@+id/menu_settings"
-        android:orderInCategory="102"
-        android:icon="@drawable/ic_settings_24dp"
-        android:title="@string/menu_settings" />
-</menu>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp"
+    android:height="24dp"
+    android:viewportWidth="24"
+    android:viewportHeight="24">
+  <path
+      android:fillColor="#FF000000"
+      android:fillType="evenOdd"
+      android:pathData="M2,12 A10,10 0 1,0 22,12 A10,10 0 1,0 2,12 Z M3.6,12 A8.4,8.4 0 1,0 20.4,12 A8.4,8.4 0 1,0 3.6,12 Z"/>
+  <path
+      android:fillColor="#FF000000"
+      android:pathData="M9.3,5.55L14.7,5.55L14.7,7.05L9.3,7.05Z M13.95,6.3L15.45,6.3L15.45,12L13.95,12Z M13.95,12L15.45,12L15.45,17.7L13.95,17.7Z"/>
+</vector>

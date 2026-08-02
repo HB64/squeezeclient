@@ -52,6 +52,21 @@ object DurationOrBlockObjectSerializer : KSerializer<Int> {
     }
 }
 
+// LMS's "offset" field on menu/playlist responses is usually a string (including "-" for
+// "not applicable"), but some menu responses send it as a bare, unquoted number instead.
+// Strict (non-lenient) JSON parsing rejects that mismatch, so accept either form here.
+object OffsetAsStringSerializer : KSerializer<String> {
+    override val descriptor: SerialDescriptor get() =
+        PrimitiveSerialDescriptor("OffsetAsString", PrimitiveKind.STRING)
+    override fun deserialize(decoder: Decoder): String {
+        val jsonDecoder = decoder as? JsonDecoder ?: return decoder.decodeString()
+        return jsonDecoder.decodeJsonElement().jsonPrimitive.content
+    }
+    override fun serialize(encoder: Encoder, value: String) {
+        encoder.encodeString(value)
+    }
+}
+
 object BooleanAsIntSerializer : KSerializer<Boolean> {
     override val descriptor: SerialDescriptor get() =
         PrimitiveSerialDescriptor("BooleanAsInt", PrimitiveKind.INT)

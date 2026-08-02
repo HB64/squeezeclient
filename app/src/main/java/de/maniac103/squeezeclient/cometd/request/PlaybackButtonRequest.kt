@@ -25,4 +25,8 @@ sealed class PlaybackButtonRequest(playerId: PlayerId, type: String) :
     class NextTrack(playerId: PlayerId) : PlaybackButtonRequest(playerId, "jump_fwd")
     class ToggleShuffle(playerId: PlayerId) : PlaybackButtonRequest(playerId, "shuffle")
     class ToggleRepeat(playerId: PlayerId) : PlaybackButtonRequest(playerId, "repeat")
+
+    // slot is 1-10, matching the LMS preset numbering (slot 10 is sent to the server as "0")
+    class Preset(playerId: PlayerId, slot: Int) :
+        PlaybackButtonRequest(playerId, "preset_${if (slot == 10) 0 else slot}.single")
 }

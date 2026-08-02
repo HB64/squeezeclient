@@ -77,8 +77,10 @@ class ContextMenuItemListFragment :
         ) {
             holder.binding.text.apply {
                 text = item.title
-                // FIXME: have isSelectable property?
-                isEnabled = item.actions?.goAction != null
+                isEnabled = item.actions?.let {
+                    it.goAction != null || it.doAction != null ||
+                        it.checkbox != null || it.radio != null
+                } ?: false
             }
         }
 

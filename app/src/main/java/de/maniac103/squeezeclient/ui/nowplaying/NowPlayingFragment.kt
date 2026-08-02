@@ -33,6 +33,7 @@ import androidx.core.view.ViewCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.isInvisible
 import androidx.core.view.isVisible
+import androidx.fragment.app.DialogFragment
 import androidx.fragment.app.commit
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.lifecycleScope
@@ -52,11 +53,13 @@ import de.maniac103.squeezeclient.extfuncs.isRtl
 import de.maniac103.squeezeclient.extfuncs.loadArtwork
 import de.maniac103.squeezeclient.extfuncs.requireParentAs
 import de.maniac103.squeezeclient.model.JiveAction
+import de.maniac103.squeezeclient.model.JiveActions
 import de.maniac103.squeezeclient.model.PagingParams
 import de.maniac103.squeezeclient.model.PlayerId
 import de.maniac103.squeezeclient.model.PlayerStatus
 import de.maniac103.squeezeclient.model.Playlist
 import de.maniac103.squeezeclient.model.SlimBrowseItemList
+import de.maniac103.squeezeclient.ui.bottomsheets.ChoicesBottomSheetFragment
 import de.maniac103.squeezeclient.ui.bottomsheets.InputBottomSheetFragment
 import de.maniac103.squeezeclient.ui.common.ViewBindingFragment
 import de.maniac103.squeezeclient.ui.contextmenu.ContextMenuBottomSheetFragment
@@ -75,6 +78,7 @@ class NowPlayingFragment :
     ViewBindingFragment<FragmentNowplayingBinding>(FragmentNowplayingBinding::inflate),
     MenuProvider,
     ContextMenuBottomSheetFragment.Listener,
+    ChoicesBottomSheetFragment.SelectionListener,
     InputBottomSheetFragment.PlainSubmitListener {
 
     interface Listener {
@@ -321,7 +325,7 @@ class NowPlayingFragment :
                     val contextMenu = ContextMenuBottomSheetFragment.create(
                         playerId,
                         currentSong.asSlimbrowseItem(),
-                        items.items
+                        items.items.filterNot { it.isRiskySugarCubeSettingToggle() }
                     )
                     contextMenu.show(childFragmentManager, "song_info")
                 }
@@ -362,8 +366,48 @@ class NowPlayingFragment :
     ): Job? {
         val actions = selectedItem.actions ?: return null
         val job = when {
+            // "Popup"-achtige items (bijv. SugarCube's "Toggle" en "Change Mix Mode"): een
+            // keuzelijst tonen, tenzij er maar 1 optie is (dan is het feitelijk een
+            // momentane actieknop, zelfde gedrag als elders in de app).
+            actions.choices != null -> {
+                val choices = actions.choices
+                if (choices.items.size == 1) {
+                    lifecycleScope.launch {
+                        connectionHelper.executeAction(playerId, choices.items[0].action)
+                    }
+                } else {
+                    showChoices(selectedItem.title, choices)
+                    null
+                }
+            }
+
+            actions.checkbox != null -> {
+                val action = if (actions.checkbox.state) {
+                    actions.checkbox.offAction
+                } else {
+                    actions.checkbox.onAction
+                }
+                lifecycleScope.launch {
+                    connectionHelper.executeAction(playerId, action)
+                }
+            }
+
+            actions.radio != null -> lifecycleScope.launch {
+                connectionHelper.executeAction(playerId, actions.radio.action)
+            }
+
             actions.doAction != null -> lifecycleScope.launch {
                 connectionHelper.executeAction(playerId, actions.doAction)
+            }
+
+            // Een goAction mét nextWindow is bedoeld als "voer uit en keer terug" (bijv.
+            // SugarCube's enable_disable/flipmode/mixfromhere, die allemaal nextWindow=
+            // nowPlaying hebben) - geen navigatie naar een nieuw browse-scherm, zoals
+            // onContextMenuAction/handleGoAction dat wel doet. Zelfde onderscheid als
+            // MainContentContainerFragment.onHandleDoOrGoAction al maakt voor de gewone
+            // menu's elders in de app.
+            actions.goAction != null && actions.goAction.nextWindow != null -> lifecycleScope.launch {
+                connectionHelper.executeAction(playerId, actions.goAction)
             }
 
             actions.goAction != null -> {
@@ -378,7 +422,41 @@ class NowPlayingFragment :
         return job
     }
 
+    // ChoicesBottomSheetFragment.SelectionListener implementation
+
+    override fun onChoiceSelected(choice: JiveAction, extraData: Bundle?): Job? {
+        val job = lifecycleScope.launch {
+            connectionHelper.executeAction(playerId, choice)
+        }
+        // De keuzelijst sluit zichzelf al (via BaseBottomSheet.handleAction); het onderliggende
+        // info-menu ("song_info") moet apart gesloten worden zodra de keuze is uitgevoerd.
+        job.invokeOnCompletion {
+            (childFragmentManager.findFragmentByTag("song_info") as? DialogFragment)
+                ?.dismissAllowingStateLoss()
+        }
+        return job
+    }
+
     // Private implementation details
+
+    // "Toggle SugarCube" en "Change Mix Mode" flippen direct een instelling zonder bevestiging
+    // of zichtbare huidige status (zie punt over ontbrekende waarde-weergave) - bij een
+    // onbedoelde tik/veeg in het info-menu verandert de SugarCube-plugin dus ongemerkt van
+    // gedrag. Verbergen hier; de volledige, veilige bediening (met huidige status en
+    // keuzepicker) blijft beschikbaar via Instellingen -> SugarCube.
+    private fun SlimBrowseItemList.SlimBrowseItem.isRiskySugarCubeSettingToggle(): Boolean {
+        val cmd = actions?.goAction?.cmd ?: return false
+        return cmd.getOrNull(0) == "sugarcube" &&
+            cmd.getOrNull(1) == "setting" &&
+            cmd.getOrNull(2)?.let {
+                it.startsWith("enable_disable") || it.startsWith("flipmode")
+            } == true
+    }
+
+    private fun showChoices(title: String, choices: JiveActions.Choices) {
+        val f = ChoicesBottomSheetFragment.create(title, choices)
+        f.show(childFragmentManager, "song_info_choices")
+    }
 
     private fun View.applyInsetsAsMargin(side: Int, insetSelector: View.(Insets) -> Int) {
         ViewCompat.setOnApplyWindowInsetsListener(this) { v, windowInsets ->
@@ -443,7 +521,10 @@ class NowPlayingFragment :
                     status.currentSongDuration.toDouble(DurationUnit.SECONDS).toFloat(),
                     0.1F
                 )
-                value = status.currentPlayPosition?.toDouble(DurationUnit.SECONDS)?.toFloat() ?: 0F
+                // Position can momentarily exceed duration (e.g. right when a track ends and
+                // there's no next track), which the Slider does not tolerate and would crash on.
+                value = (status.currentPlayPosition?.toDouble(DurationUnit.SECONDS)?.toFloat() ?: 0F)
+                    .coerceIn(0F, valueTo)
                 isEnabled = status.playbackState != PlayerStatus.PlayState.Stopped
             }
             binding.progressMinimized.apply {

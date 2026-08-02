@@ -18,6 +18,7 @@
 package de.maniac103.squeezeclient.ui
 
 import android.content.Intent
+import android.os.Build
 import android.os.Bundle
 import android.text.SpannableStringBuilder
 import android.text.style.ImageSpan
@@ -25,7 +26,7 @@ import android.util.Log
 import android.view.KeyEvent
 import android.view.Menu
 import android.view.View
-import android.widget.CompoundButton
+import android.view.WindowManager
 import androidx.activity.enableEdgeToEdge
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.content.edit
@@ -50,14 +51,15 @@ import de.maniac103.squeezeclient.extfuncs.ViewEdge
 import de.maniac103.squeezeclient.extfuncs.addSystemBarAndCutoutInsetsListener
 import de.maniac103.squeezeclient.extfuncs.backProgressInterpolator
 import de.maniac103.squeezeclient.extfuncs.connectionHelper
+import de.maniac103.squeezeclient.extfuncs.defaultPlayer
 import de.maniac103.squeezeclient.extfuncs.getParcelableOrNull
 import de.maniac103.squeezeclient.extfuncs.isRtl
 import de.maniac103.squeezeclient.extfuncs.lastSelectedPlayer
-import de.maniac103.squeezeclient.extfuncs.localPlayerEnabled
+import de.maniac103.squeezeclient.extfuncs.onlyControlDefaultPlayer
 import de.maniac103.squeezeclient.extfuncs.prefs
 import de.maniac103.squeezeclient.extfuncs.putLastSelectedPlayer
-import de.maniac103.squeezeclient.extfuncs.putLocalPlayerEnabled
 import de.maniac103.squeezeclient.extfuncs.serverConfig
+import de.maniac103.squeezeclient.extfuncs.showOverLockScreen
 import de.maniac103.squeezeclient.extfuncs.useVolumeButtonsForPlayerVolume
 import de.maniac103.squeezeclient.model.JiveAction
 import de.maniac103.squeezeclient.model.Player
@@ -95,7 +97,6 @@ class MainActivity :
 
     private lateinit var binding: ActivityMainBinding
     private lateinit var drawerHeaderBinding: NavDrawerHeaderBinding
-    private lateinit var localPlaybackSwitch: CompoundButton
 
     private var allPlayers: List<Player>? = null
     private var player: Player? = null
@@ -149,6 +150,12 @@ class MainActivity :
                         prefs.edit {
                             putLastSelectedPlayer(it.id)
                         }
+                        // Zonder dit blijft een al draaiende MediaService (bv. omdat Android
+                        // Auto verbonden is) de oude speler bedienen: currentPlayer daar wordt
+                        // verder alleen bijgewerkt via onStop() (en dan nog alleen als de nieuw
+                        // gekozen speler toevallig al aan het afspelen is) of bij een koude
+                        // start. Direct pingen zorgt dat de wissel meteen doorwerkt naar AA.
+                        MediaService.start(this, it.id)
                     }
                 }
 
@@ -187,15 +194,6 @@ class MainActivity :
             windowInsets
         }
 
-        localPlaybackSwitch =
-            binding.navigationView.menu.findItem(R.id.local_playback)?.actionView as CompoundButton
-        localPlaybackSwitch.isChecked = prefs.localPlayerEnabled
-        localPlaybackSwitch.setOnCheckedChangeListener { _, checked ->
-            prefs.edit {
-                putLocalPlayerEnabled(checked)
-            }
-        }
-
         binding.appbarContainer.addSystemBarAndCutoutInsetsListener(
             ViewEdge.Top,
             ViewEdge.TopStart
@@ -225,6 +223,25 @@ class MainActivity :
     override fun onStart() {
         super.onStart()
         LocalPlaybackService.triggerStartOrStop(this)
+        // Elke keer opnieuw toepassen (niet alleen in onCreate), zodat een wijziging van de
+        // instelling in SettingsActivity direct effect heeft zodra je hier terugkomt.
+        applyShowOverLockScreenSetting(prefs.showOverLockScreen)
+    }
+
+    // Zelfde functie als Material's "Show over lock screen": als deze activity de laatst
+    // actieve app was toen het scherm vergrendelde, toon 'm rechtstreeks in plaats van het
+    // PIN/patroon-scherm. minSdk is 26, setShowWhenLocked() bestaat pas vanaf 27 (O_MR1) -
+    // daaronder terugvallen op de oudere window-flag (functioneel nog steeds ondersteund,
+    // alleen niet meer de aanbevolen API).
+    @Suppress("DEPRECATION")
+    private fun applyShowOverLockScreenSetting(enabled: Boolean) {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O_MR1) {
+            setShowWhenLocked(enabled)
+        } else if (enabled) {
+            window.addFlags(WindowManager.LayoutParams.FLAG_SHOW_WHEN_LOCKED)
+        } else {
+            window.clearFlags(WindowManager.LayoutParams.FLAG_SHOW_WHEN_LOCKED)
+        }
     }
 
     override fun onStop() {
@@ -417,8 +434,16 @@ class MainActivity :
             .flatMapLatest { it.playStatus }
             .onEach { status ->
                 binding.toolbar.subtitle = status.playerName
-                playerIsActive = status.powered &&
+                val isNowActive = status.powered &&
                     status.playbackState == PlayerStatus.PlayState.Playing
+                // Alleen bij de overgang naar afspelen (niet bij elke status-update terwijl
+                // er al wordt afgespeeld) automatisch naar Now Playing springen, zodat we niet
+                // tegen een handmatig ingeklapt scherm in blijven vechten zolang de muziek
+                // doorspeelt. expandIfNeeded() zelf doet ook al niets als het al open staat.
+                if (isNowActive && !playerIsActive) {
+                    nowPlayingFragment?.expandIfNeeded()
+                }
+                playerIsActive = isNowActive
             }
             .launchIn(scope)
     }
@@ -450,7 +475,18 @@ class MainActivity :
 
         is ConnectionState.Connected -> {
             consecutiveUnsuccessfulConnectAttempts = 0
-            val presentPlayers = state.players.filter { it.connected }
+            val allPresentPlayers = state.players.filter { it.connected }
+            // Als "Only control default" aan staat én er een standaardspeler is gekozen: nooit
+            // andere spelers tonen of erheen wisselen, gewoon altijd die ene speler bedienen.
+            // Zonder gekozen standaardspeler (defaultPlayer == null) blijft het gedrag
+            // ongewijzigd - alle spelers gewoon zichtbaar/wisselbaar.
+            val restrictToDefault = prefs.onlyControlDefaultPlayer
+            val defaultPlayerId = prefs.defaultPlayer
+            val presentPlayers = if (restrictToDefault && defaultPlayerId != null) {
+                allPresentPlayers.filter { it.id == defaultPlayerId }
+            } else {
+                allPresentPlayers
+            }
             updatePlayerList(presentPlayers)
             val lastActivePlayer = prefs.lastSelectedPlayer
             val activePlayer = lastActivePlayer
@@ -497,9 +533,6 @@ class MainActivity :
         binding.navigationView.menu.findItem(R.id.manage_players)?.let {
             val players = allPlayers
             it.isVisible = players != null && players.size > 1 && !isInLoadingOrErrorState
-        }
-        binding.navigationView.menu.findItem(R.id.local_playback)?.let {
-            it.isVisible = !isInLoadingOrErrorState
         }
     }
 

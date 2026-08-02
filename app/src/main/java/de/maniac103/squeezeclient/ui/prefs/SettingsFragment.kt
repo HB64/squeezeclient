@@ -23,7 +23,9 @@ import android.content.SharedPreferences
 import android.os.Build
 import android.os.Bundle
 import android.provider.Settings
+import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.lifecycleScope
+import androidx.lifecycle.repeatOnLifecycle
 import androidx.preference.ListPreference
 import androidx.preference.Preference
 import androidx.preference.PreferenceFragmentCompat
@@ -33,14 +35,20 @@ import com.google.android.material.dialog.MaterialAlertDialogBuilder
 import com.markodevcic.peko.PermissionRequester
 import com.markodevcic.peko.PermissionResult
 import de.maniac103.squeezeclient.R
+import de.maniac103.squeezeclient.cometd.ConnectionState
 import de.maniac103.squeezeclient.extfuncs.DownloadFolderStructure
 import de.maniac103.squeezeclient.extfuncs.LocalPlayerVolumeMode
+import de.maniac103.squeezeclient.extfuncs.androidAutoPresetButtonCount
 import de.maniac103.squeezeclient.extfuncs.await
+import de.maniac103.squeezeclient.extfuncs.connectionHelper
+import de.maniac103.squeezeclient.extfuncs.defaultPlayer
 import de.maniac103.squeezeclient.extfuncs.downloadFolderStructure
 import de.maniac103.squeezeclient.extfuncs.fadeInDuration
 import de.maniac103.squeezeclient.extfuncs.localPlayerVolumeMode
 import de.maniac103.squeezeclient.extfuncs.prefs
 import de.maniac103.squeezeclient.extfuncs.volumeStepSize
+import de.maniac103.squeezeclient.model.Player
+import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 
@@ -51,6 +59,9 @@ class SettingsFragment : PreferenceFragmentCompat() {
     private lateinit var downloadFolderStructure: ListPreference
     private lateinit var localPlayerEnabled: SwitchPreferenceCompat
     private lateinit var localPlayerVolumeMode: ListPreference
+    private lateinit var aaPresetButtonCountPreference: SeekBarPreference
+    private lateinit var defaultPlayerPreference: ListPreference
+    private var knownPlayers: List<Player> = emptyList()
 
     override fun onCreatePreferences(savedInstanceState: Bundle?, rootKey: String?) {
         addPreferencesFromResource(R.xml.settings)
@@ -110,6 +121,33 @@ class SettingsFragment : PreferenceFragmentCompat() {
         }
         localPlayerVolumeMode.value = prefs.localPlayerVolumeMode.prefValue
         updateLocalPlayerVolumeModeSummary(localPlayerVolumeMode.value)
+
+        aaPresetButtonCountPreference = findPreference("aa_preset_button_count")!!
+        aaPresetButtonCountPreference.setOnPreferenceChangeListener { _, newValue ->
+            updateAaPresetButtonCountSummary(newValue as Int)
+            true
+        }
+        updateAaPresetButtonCountSummary(prefs.androidAutoPresetButtonCount)
+
+        defaultPlayerPreference = findPreference("default_player")!!
+        defaultPlayerPreference.value = prefs.defaultPlayer?.id
+        defaultPlayerPreference.setOnPreferenceChangeListener { _, newValue ->
+            updateDefaultPlayerSummary(newValue as String?)
+            true
+        }
+        updateDefaultPlayerSummary(defaultPlayerPreference.value)
+        lifecycleScope.launch {
+            repeatOnLifecycle(Lifecycle.State.STARTED) {
+                connectionHelper.state.collectLatest { state ->
+                    knownPlayers = (state as? ConnectionState.Connected)?.players.orEmpty()
+                    defaultPlayerPreference.entries =
+                        knownPlayers.map { it.name }.toTypedArray()
+                    defaultPlayerPreference.entryValues =
+                        knownPlayers.map { it.id.id }.toTypedArray()
+                    updateDefaultPlayerSummary(defaultPlayerPreference.value)
+                }
+            }
+        }
     }
 
     @Suppress("deprecation") // setTargetFragment is deprecated, but needed by super class
@@ -136,6 +174,24 @@ class SettingsFragment : PreferenceFragmentCompat() {
             R.string.settings_volume_step_size_summary,
             value
         )
+    }
+
+    private fun updateAaPresetButtonCountSummary(value: Int) {
+        aaPresetButtonCountPreference.summary = if (value == 0) {
+            getString(R.string.settings_aa_preset_button_count_summary_disabled)
+        } else {
+            resources.getQuantityString(
+                R.plurals.settings_aa_preset_button_count_summary,
+                value,
+                value
+            )
+        }
+    }
+
+    private fun updateDefaultPlayerSummary(value: String?) {
+        val player = knownPlayers.find { it.id.id == value }
+        defaultPlayerPreference.summary = player?.name
+            ?: getString(R.string.settings_default_player_summary_none)
     }
 
     private fun updateLocalPlayerVolumeModeSummary(value: String) {

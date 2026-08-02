@@ -115,6 +115,18 @@
     <string name="settings_category_display">Display</string>
     <string name="settings_category_download">Download</string>
     <string name="settings_category_local_player">Local playback</string>
+    <string name="settings_category_default_player">Default player</string>
+    <string name="settings_default_player_title">Default player</string>
+    <string name="settings_default_player_summary_none">None selected</string>
+    <string name="settings_only_control_default_player_title">Only control default</string>
+    <string name="settings_only_control_default_player_summary">Only show, and control, the default player (as configured above).</string>
+    <string name="settings_category_android_auto">Android Auto</string>
+    <string name="settings_aa_preset_button_count_title">Preset buttons</string>
+    <string name="settings_aa_preset_button_count_summary_disabled">Disabled</string>
+    <plurals name="settings_aa_preset_button_count_summary">
+        <item quantity="one">Show 1 preset button</item>
+        <item quantity="other">Show %d preset buttons</item>
+    </plurals>
     <string name="settings_local_player_enabled_title">Use device as player</string>
     <string name="settings_local_player_enabled_summary">Enable playback on this device by advertising it as player towards the server</string>
     <string name="settings_local_player_volume_mode_title">Volume control mode</string>
@@ -136,6 +148,8 @@
     <string name="settings_force_grid_title">Always show list items as grid</string>
     <string name="settings_force_grid_summary_off">Show lists of images (albums, titles etc.) arranged in list or grid form, depending on device size and orientation.</string>
     <string name="settings_force_grid_summary_on">Always show lists of images (albums, titles etc.) arranged in grid form.</string>
+    <string name="settings_show_over_lock_screen_title">Show over lock screen</string>
+    <string name="settings_show_over_lock_screen_summary">If the app is the current app when the screen locks, show it directly instead of the PIN/pattern screen.</string>
     <string name="settings_download_path_structure_title">Folder hierarchy</string>
     <string name="settings_download_path_structure_entry_as_server">As stored on server</string>
     <string name="settings_download_path_structure_entry_album">Album</string>

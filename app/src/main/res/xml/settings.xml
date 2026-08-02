@@ -37,6 +37,12 @@
             android:summaryOff="@string/settings_force_grid_summary_off"
             android:defaultValue="false" />
 
+        <SwitchPreferenceCompat
+            android:key="show_over_lock_screen"
+            android:title="@string/settings_show_over_lock_screen_title"
+            android:summary="@string/settings_show_over_lock_screen_summary"
+            android:defaultValue="false" />
+
     </PreferenceCategory>
 
     <PreferenceCategory
@@ -92,6 +98,35 @@
             android:entries="@array/settings_local_player_volume_mode_entries"
             android:entryValues="@array/settings_local_player_volume_mode_values"
             android:defaultValue="devicewhileplaying" />
+
+    </PreferenceCategory>
+
+    <PreferenceCategory
+        android:title="@string/settings_category_default_player">
+
+        <ListPreference
+            android:key="default_player"
+            android:title="@string/settings_default_player_title"
+            android:summary="%s" />
+
+        <SwitchPreferenceCompat
+            android:key="only_control_default_player"
+            android:title="@string/settings_only_control_default_player_title"
+            android:summary="@string/settings_only_control_default_player_summary"
+            android:defaultValue="false" />
+
+    </PreferenceCategory>
+
+    <PreferenceCategory
+        android:title="@string/settings_category_android_auto">
+
+        <SeekBarPreference
+            android:key="aa_preset_button_count"
+            android:title="@string/settings_aa_preset_button_count_title"
+            android:defaultValue="0"
+            app:min="0"
+            android:max="5"
+            app:updatesContinuously="true" />
 
     </PreferenceCategory>
 
