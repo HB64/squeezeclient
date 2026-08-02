@@ -4,3 +4,7 @@
 - Fix Squeezebox renaming action
 - Improve local player buffer fill level reporting
 - Misc. bug fixes
+- Fix Android Auto sometimes failing to automatically resume playback after a
+  connection was lost and re-established (e.g. after closing and reopening
+  Android Auto) - playback now resumes on the correct track, at the exact
+  position where it was interrupted
