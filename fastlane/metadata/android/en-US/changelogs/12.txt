@@ -8,3 +8,6 @@
   connection was lost and re-established (e.g. after closing and reopening
   Android Auto) - playback now resumes on the correct track, at the exact
   position where it was interrupted
+- Fix local player sometimes not reporting track changes to the server,
+  causing playback to stall or the displayed track title/artwork to get
+  stuck on the previous song

@@ -283,7 +283,25 @@ class LocalPlayer(
         ) {
             player.volume = playerInternalVolume * currentReplayGain
         }
-        if (reason == Player.MEDIA_ITEM_TRANSITION_REASON_AUTO && readyForPlayback && !paused) {
+        // Deze app laadt elk nummer apart als nieuwe bron (zie play(): addMediaSource zodra de
+        // speler niet meer IDLE is), dus een trackovergang komt in de praktijk altijd binnen als
+        // MEDIA_ITEM_TRANSITION_REASON_PLAYLIST_CHANGED, niet als _AUTO (bevestigd via device-log:
+        // alle geobserveerde overgangen hadden reason=3/PLAYLIST_CHANGED, geen enkele reason=1/
+        // AUTO). Met alleen de AUTO-check hierboven werd onPlaybackAdvancedToNextTrack() dus zo
+        // goed als nooit aangeroepen, waardoor de server niet hoorde dat er een nieuw nummer
+        // gestart was - dat veroorzaakte zowel wisselvallige afspeelproblemen als vastzittende
+        // tracknaam/hoes (in zowel AA als de app zelf), omdat beide hun metadata uit de
+        // serverstatus halen, niet rechtstreeks van de lokale decoder. Er stond hier voorheen ook
+        // een readyForPlayback-check (playbackState == STATE_READY); die is losgelaten omdat de
+        // speler op het exacte transitiemoment nog STATE_BUFFERING kan zijn, zonder dat er
+        // daarna nog een terugvalmechanisme is dat alsnog meldt.
+        if (
+            (
+                reason == Player.MEDIA_ITEM_TRANSITION_REASON_AUTO ||
+                reason == Player.MEDIA_ITEM_TRANSITION_REASON_PLAYLIST_CHANGED
+            ) &&
+            !paused
+        ) {
             onPlaybackAdvancedToNextTrack()
         }
     }
