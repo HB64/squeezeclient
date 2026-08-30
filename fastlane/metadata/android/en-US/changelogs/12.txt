@@ -1,9 +1,3 @@
-- Fix seeking in FLAC files in local player (#39)
-- Reduce gap between tracks in local player (#46)
-- Add a setting for volume control step size (#45)
-- Fix Squeezebox renaming action
-- Improve local player buffer fill level reporting
-- Misc. bug fixes
 - Fix Android Auto sometimes failing to automatically resume playback after a
   connection was lost and re-established (e.g. after closing and reopening
   Android Auto) - playback now resumes on the correct track, at the exact
@@ -11,3 +5,5 @@
 - Fix local player sometimes not reporting track changes to the server,
   causing playback to stall or the displayed track title/artwork to get
   stuck on the previous song
+- Fix memory spike when loading large playlists/batches that could cause the
+  app or other apps to be killed by the system
