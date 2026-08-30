@@ -119,10 +119,8 @@ class SlimprotoSocket(context: Context, prefs: SharedPreferences) {
             val pcmParams: PcmStreamParams? = null
         ) : CommandPacket()
 
-        // Alleen gevuld wanneer de server een kale PCM-stream aankondigt (STRM-formatbyte 'p',
-        // wat ook WAV/AIFF omvat, zie slimproto-spec). De HTTP-body heeft in dat geval geen
-        // eigen header, dus deze parameters zijn nodig om er zelf een container omheen te
-        // bouwen voordat ExoPlayer ermee overweg kan.
+        // Only set when the server announces a raw PCM stream (STRM format byte 'p', covers
+        // WAV/AIFF too); the HTTP body has no header of its own in that case.
         data class PcmStreamParams(
             val sampleSizeBits: Int,
             val sampleRateHz: Int,
@@ -201,9 +199,9 @@ class SlimprotoSocket(context: Context, prefs: SharedPreferences) {
         }
     }
 
-    // Waardetabellen voor het STRM-commando. De officiële slimproto-documentatie noemt hier
-    // '2' = 20-bit, maar squeezelite's eigen pcm.c (de facto-referentie waar LMS tegen test)
-    // rekent size = (c - '0' + 1) bytes, dus '2' = 3 bytes = 24-bit. We volgen squeezelite.
+    // Value tables for the STRM command. The slimproto spec lists '2' as 20-bit, but squeezelite
+    // (the de facto reference LMS tests against) computes size = (c - '0' + 1) bytes, so '2' is
+    // 24-bit; this follows squeezelite.
     private fun decodePcmSampleSize(c: Char): Int = when (c) {
         '0' -> 8
         '1' -> 16
@@ -250,16 +248,13 @@ class SlimprotoSocket(context: Context, prefs: SharedPreferences) {
             'f' -> "audio/flac" // FLAC
             'o' -> "audio/ogg" // OGG
             'a' -> "audio/mp4a-latm" // AAC
-            // Kale PCM (ook WAV/AIFF): geen eigen mimeType hier, wordt via pcmParams
-            // hieronder afgehandeld door zelf een container om de data te bouwen.
+            // Raw PCM (also WAV/AIFF): no mimeType here, handled via pcmParams below.
             'p' -> null
             '?' -> null
             else -> throw IllegalArgumentException("Unexpected STRM format value $formatByte")
         }
 
-        // Alleen betekenisvol wanneer formatByte == 'p'; voor andere formaten worden deze
-        // bytes voor iets anders hergebruikt door de server (zie FLAC/WMA/AAC-notes in de
-        // slimproto-spec) en negeren we ze net als voorheen.
+        // Only meaningful when formatByte == 'p'; ignored for other formats.
         val pcmSampleSizeByte = buffer.get().toInt().toChar()
         val pcmSampleRateByte = buffer.get().toInt().toChar()
         val pcmChannelsByte = buffer.get().toInt().toChar()
@@ -269,8 +264,7 @@ class SlimprotoSocket(context: Context, prefs: SharedPreferences) {
                 sampleSizeBits = decodePcmSampleSize(pcmSampleSizeByte),
                 sampleRateHz = decodePcmSampleRate(pcmSampleRateByte),
                 channels = decodePcmChannels(pcmChannelsByte),
-                // Net als squeezelite: alleen '0' is big-endian (AIFF), al het andere
-                // (normaal '1' voor WAV) behandelen we als little-endian.
+                // Only '0' is big-endian (AIFF); everything else is treated as little-endian.
                 bigEndian = pcmEndiannessByte == '0'
             )
         } else {
@@ -362,24 +356,16 @@ class SlimprotoSocket(context: Context, prefs: SharedPreferences) {
     }
 
     private suspend fun sendHello(reconnect: Boolean) {
-        // "pcm" laat LMS weten dat we kale PCM (STRM-formatbyte 'p') aankunnen, wat het een
-        // lossless-transcodeprofiel geeft i.p.v. altijd naar lossy mp3/aac te vallen. Bewust
-        // geen "aif": big-endian PCM wordt in LocalPlayer.start() nog niet gewrapt.
-        // Alleen aanbieden op WiFi: rauwe PCM is ~1.4 Mbps (16-bit/44.1kHz stereo), zo'n 4-5x
-        // zoveel als een gecomprimeerde stream. Op mobiele data (bijv. onderweg via VPN naar
-        // een thuis-LMS-server) leidt dat tot haperingen/dropouts - dan liever automatisch
-        // terugvallen op de gecomprimeerde profielen zoals voorheen.
+        // "pcm" advertises support for raw PCM (STRM format byte 'p') for lossless transcoding;
+        // "aif" is deliberately omitted since big-endian PCM isn't wrapped in LocalPlayer.start().
+        // Only offered on WiFi, since raw PCM (~1.4 Mbps) is 4-5x a compressed stream's bitrate.
+        // flc first so LMS keeps FLAC sources as-is instead of transcoding them to PCM.
         val supportedFormats = if (isOnWifi()) {
-            listOf("mp3", "aac", "ogg", "flc", "pcm")
+            listOf("flc", "aac", "ogg", "mp3", "pcm")
         } else {
-            listOf("mp3", "aac", "ogg", "flc")
+            listOf("flc", "aac", "ogg", "mp3")
         }
         val supportedCapabilities = listOf(
-            // Model=squeezelite is geprobeerd om een ruimer transcodeprofiel (Unlimited
-            // bitrate) bij LMS te krijgen, maar dat maakte geen verschil — en zorgde er wel
-            // voor dat LMS onze eigen lokale speler niet meer kon onderscheiden van een
-            // los geïnstalleerde Squeezelite-app op hetzelfde toestel. Terug naar de eigen,
-            // herkenbare modelnaam.
             "Model=squeezeclient",
             "AccuratePlayPoints=1",
             "CanHTTPS=1"

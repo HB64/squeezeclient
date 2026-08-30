@@ -177,13 +177,11 @@ class LocalPlayer(
         autoStart: Boolean,
         pcmParams: SlimprotoSocket.CommandPacket.PcmStreamParams? = null
     ) {
-        // Kale PCM heeft geen eigen container/header - LMS levert alleen de ruwe samples.
-        // We plakken er zelf een minimale WAV-header voor zodat ExoPlayer's WavExtractor de
-        // stream herkent. Big-endian (AIFF-achtige) PCM wordt hier bewust nog niet ondersteund:
-        // een WAV-container veronderstelt little-endian samples.
+        // Raw PCM has no container/header; wrap it in a minimal WAV header so ExoPlayer's
+        // WavExtractor recognizes it. Big-endian (AIFF-style) PCM is not supported here.
         val usePcmWrapper = pcmParams != null && !pcmParams.bigEndian
         if (pcmParams != null && pcmParams.bigEndian) {
-            Log.w(TAG, "Big-endian PCM-stream aangeboden, WAV-wrapping wordt hiervoor overgeslagen")
+            Log.w(TAG, "Big-endian PCM stream offered, skipping WAV wrapping for it")
         }
         val effectiveMimeType = if (usePcmWrapper) "audio/wav" else mimeType
         val mediaItem = MediaItem.Builder()
@@ -229,14 +227,8 @@ class LocalPlayer(
         player.stop()
     }
 
-    // Alleen aanroepen bij het echt afsluiten van de service (niet bij het wisselen naar een
-    // volgende track, daarvoor is stop() bedoeld). ExoPlayer.stop() laat de speler en zijn
-    // audiotrack/native audioresources bestaan en geeft audiofocus niet gegarandeerd deterministisch
-    // vrij; release() doet dat wel. Zonder dit kon een net uitgezette lokale speler nog even
-    // (deels) audiofocus vasthouden of, andersom, een net binnengekomen slimproto-commando de
-    // nog niet volledig afgebroken speler weer laten starten - wat leek op willekeurig dubbele
-    // audio of juist stilte in combinatie met een andere speler (bv. Squeezelite) op hetzelfde
-    // toestel.
+    // Call only when shutting the service down, not on track switches (use stop() there).
+    // Unlike stop(), this deterministically releases audio focus and native resources.
     fun release() {
         player.release()
     }
@@ -283,18 +275,8 @@ class LocalPlayer(
         ) {
             player.volume = playerInternalVolume * currentReplayGain
         }
-        // Deze app laadt elk nummer apart als nieuwe bron (zie play(): addMediaSource zodra de
-        // speler niet meer IDLE is), dus een trackovergang komt in de praktijk altijd binnen als
-        // MEDIA_ITEM_TRANSITION_REASON_PLAYLIST_CHANGED, niet als _AUTO (bevestigd via device-log:
-        // alle geobserveerde overgangen hadden reason=3/PLAYLIST_CHANGED, geen enkele reason=1/
-        // AUTO). Met alleen de AUTO-check hierboven werd onPlaybackAdvancedToNextTrack() dus zo
-        // goed als nooit aangeroepen, waardoor de server niet hoorde dat er een nieuw nummer
-        // gestart was - dat veroorzaakte zowel wisselvallige afspeelproblemen als vastzittende
-        // tracknaam/hoes (in zowel AA als de app zelf), omdat beide hun metadata uit de
-        // serverstatus halen, niet rechtstreeks van de lokale decoder. Er stond hier voorheen ook
-        // een readyForPlayback-check (playbackState == STATE_READY); die is losgelaten omdat de
-        // speler op het exacte transitiemoment nog STATE_BUFFERING kan zijn, zonder dat er
-        // daarna nog een terugvalmechanisme is dat alsnog meldt.
+        // Tracks are queued as separate media sources (see play()), so a track transition is
+        // reported as PLAYLIST_CHANGED rather than AUTO.
         if (
             (
                 reason == Player.MEDIA_ITEM_TRANSITION_REASON_AUTO ||
@@ -443,10 +425,8 @@ class LocalPlayer(
     }
 }
 
-// Plakt een synthetische 44-byte WAV-header voor de kale PCM-bytestream van de upstream
-// DataSource, zodat ExoPlayer's eigen WavExtractor de audio herkent en afspeelt zonder dat we
-// een eigen Extractor hoeven te schrijven. De grootte-velden staan op "onbekend" (0xFFFFFFFF),
-// de gangbare conventie voor WAV-streams waarvan de totale lengte niet vooraf bekend is.
+// Prepends a synthetic 44-byte WAV header to the raw PCM stream so ExoPlayer's WavExtractor
+// recognizes it. Size fields are set to "unknown" (0xFFFFFFFF), per WAV streaming convention.
 @UnstableApi
 private class WavHeaderPrependingDataSource(
     private val upstream: DataSource,
@@ -495,10 +475,10 @@ private class WavHeaderPrependingDataSource(
             val byteRate = sampleRate * blockAlign
             return ByteBuffer.allocate(44).order(ByteOrder.LITTLE_ENDIAN).apply {
                 put("RIFF".toByteArray(Charsets.US_ASCII))
-                putInt(-1) // 0xFFFFFFFF: onbekende totale grootte
+                putInt(-1) // unknown total size
                 put("WAVE".toByteArray(Charsets.US_ASCII))
                 put("fmt ".toByteArray(Charsets.US_ASCII))
-                putInt(16) // Subchunk1Size voor PCM
+                putInt(16) // Subchunk1Size for PCM
                 putShort(1) // AudioFormat = PCM (integer)
                 putShort(channels.toShort())
                 putInt(sampleRate)
@@ -506,7 +486,7 @@ private class WavHeaderPrependingDataSource(
                 putShort(blockAlign.toShort())
                 putShort(bitsPerSample.toShort())
                 put("data".toByteArray(Charsets.US_ASCII))
-                putInt(-1) // 0xFFFFFFFF: onbekende datagrootte (streaming)
+                putInt(-1) // unknown data size (streaming)
             }.array()
         }
     }

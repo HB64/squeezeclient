@@ -75,9 +75,7 @@ val SharedPreferences.volumeStepSize: Int get() = getInt("volume_step_size", 5)
 val SharedPreferences.androidAutoPresetButtonCount: Int get() =
     getInt("aa_preset_button_count", 0)
 
-// Analoog aan Lyrion Material's "Default player" + "Only control default": een vaste
-// voorkeursspeler die je (optioneel) altijd wilt bedienen, zonder tussen spelers te hoeven
-// wisselen. Zonder gekozen standaardspeler blijft het gedrag ongewijzigd (alle spelers zichtbaar).
+// Analogous to Lyrion Material's "Default player" + "Only control default".
 val SharedPreferences.defaultPlayer: PlayerId? get() =
     getString("default_player", null)?.let { PlayerId(it) }
 

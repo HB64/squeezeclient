@@ -28,23 +28,20 @@ import android.provider.OpenableColumns
 import java.io.File
 import java.io.FileNotFoundException
 
-// Geëxporteerde provider die uitsluitend de gecachete albumhoes-thumbnails in
-// cacheDir/album_art_cache/ blootstelt. Android Auto/AAOS resolven artwork-URI's in
-// MediaMetadata via ContentResolver vanuit hun eigen proces (bv. Gearhead, SystemUI); zonder
-// export weigert het systeem dat met "Permission Denial: ... not exported". Een androidx
-// FileProvider kan hier niet voor gebruikt worden: die weigert zelf om exported te zijn.
-// Albumhoezen zijn geen gevoelige data, dus onbeperkte export is hier acceptabel.
+// Exported provider exposing only the cached album art thumbnails in cacheDir/album_art_cache/.
+// Android Auto/AAOS resolve artwork URIs in MediaMetadata via ContentResolver from their own
+// process, which requires this provider to be exported; androidx FileProvider refuses that.
 class AlbumArtFileProvider : ContentProvider() {
     override fun onCreate() = true
 
     private fun resolveFile(uri: Uri): File {
         val fileName = uri.lastPathSegment
-            ?: throw FileNotFoundException("Geen bestandsnaam in $uri")
+            ?: throw FileNotFoundException("No filename in $uri")
         val cacheDir = File(requireContext().cacheDir, "album_art_cache")
         val file = File(cacheDir, fileName)
-        // Voorkom path traversal: het resultaat moet echt binnen cacheDir/album_art_cache liggen.
+        // Prevent path traversal outside cacheDir/album_art_cache.
         if (file.parentFile?.canonicalFile != cacheDir.canonicalFile) {
-            throw FileNotFoundException("Ongeldig pad: $uri")
+            throw FileNotFoundException("Invalid path: $uri")
         }
         return file
     }

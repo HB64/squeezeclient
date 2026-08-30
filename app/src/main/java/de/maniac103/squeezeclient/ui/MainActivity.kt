@@ -150,11 +150,8 @@ class MainActivity :
                         prefs.edit {
                             putLastSelectedPlayer(it.id)
                         }
-                        // Zonder dit blijft een al draaiende MediaService (bv. omdat Android
-                        // Auto verbonden is) de oude speler bedienen: currentPlayer daar wordt
-                        // verder alleen bijgewerkt via onStop() (en dan nog alleen als de nieuw
-                        // gekozen speler toevallig al aan het afspelen is) of bij een koude
-                        // start. Direct pingen zorgt dat de wissel meteen doorwerkt naar AA.
+                        // Ping MediaService directly so an already-running instance (e.g. with
+                        // Android Auto connected) picks up the new player immediately.
                         MediaService.start(this, it.id)
                     }
                 }
@@ -223,16 +220,13 @@ class MainActivity :
     override fun onStart() {
         super.onStart()
         LocalPlaybackService.triggerStartOrStop(this)
-        // Elke keer opnieuw toepassen (niet alleen in onCreate), zodat een wijziging van de
-        // instelling in SettingsActivity direct effect heeft zodra je hier terugkomt.
+        // Re-applied on every onStart so a setting change in SettingsActivity takes effect
+        // immediately on return.
         applyShowOverLockScreenSetting(prefs.showOverLockScreen)
     }
 
-    // Zelfde functie als Material's "Show over lock screen": als deze activity de laatst
-    // actieve app was toen het scherm vergrendelde, toon 'm rechtstreeks in plaats van het
-    // PIN/patroon-scherm. minSdk is 26, setShowWhenLocked() bestaat pas vanaf 27 (O_MR1) -
-    // daaronder terugvallen op de oudere window-flag (functioneel nog steeds ondersteund,
-    // alleen niet meer de aanbevolen API).
+    // setShowWhenLocked() requires API 27 (O_MR1); minSdk is 26, so fall back to the older
+    // window flag below that.
     @Suppress("DEPRECATION")
     private fun applyShowOverLockScreenSetting(enabled: Boolean) {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O_MR1) {
@@ -436,10 +430,8 @@ class MainActivity :
                 binding.toolbar.subtitle = status.playerName
                 val isNowActive = status.powered &&
                     status.playbackState == PlayerStatus.PlayState.Playing
-                // Alleen bij de overgang naar afspelen (niet bij elke status-update terwijl
-                // er al wordt afgespeeld) automatisch naar Now Playing springen, zodat we niet
-                // tegen een handmatig ingeklapt scherm in blijven vechten zolang de muziek
-                // doorspeelt. expandIfNeeded() zelf doet ook al niets als het al open staat.
+                // Only auto-expand on the transition to playing, not on every status update
+                // while already playing.
                 if (isNowActive && !playerIsActive) {
                     nowPlayingFragment?.expandIfNeeded()
                 }
@@ -476,10 +468,8 @@ class MainActivity :
         is ConnectionState.Connected -> {
             consecutiveUnsuccessfulConnectAttempts = 0
             val allPresentPlayers = state.players.filter { it.connected }
-            // Als "Only control default" aan staat én er een standaardspeler is gekozen: nooit
-            // andere spelers tonen of erheen wisselen, gewoon altijd die ene speler bedienen.
-            // Zonder gekozen standaardspeler (defaultPlayer == null) blijft het gedrag
-            // ongewijzigd - alle spelers gewoon zichtbaar/wisselbaar.
+            // With "only control default" enabled and a default player set, restrict to that
+            // player only.
             val restrictToDefault = prefs.onlyControlDefaultPlayer
             val defaultPlayerId = prefs.defaultPlayer
             val presentPlayers = if (restrictToDefault && defaultPlayerId != null) {

@@ -512,10 +512,8 @@ class ConnectionHelper(private val appContext: SqueezeClientApplication) {
                 )
             },
             {
-                // De server kan i.p.v. een echte status ook een foutobject teruggeven, bv.
-                // {"error":"invalid player"} als de speler-ID niet (meer) bestaat - dat gebeurt
-                // o.a. als de local player net is uitgeschakeld terwijl er nog naar zijn status
-                // werd gevraagd. Zonder deze afvanging crasht het decoderen daarvan de hele app.
+                // The server can return an error object instead of a real status, e.g.
+                // {"error":"invalid player"} for an unknown player ID.
                 try {
                     connectionHelper.doRequestWithResult<PlayerStatusResponse>(
                         PlayerStatusRequest(playerId)

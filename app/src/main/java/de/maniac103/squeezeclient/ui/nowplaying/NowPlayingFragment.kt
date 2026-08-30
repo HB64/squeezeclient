@@ -366,9 +366,8 @@ class NowPlayingFragment :
     ): Job? {
         val actions = selectedItem.actions ?: return null
         val job = when {
-            // "Popup"-achtige items (bijv. SugarCube's "Toggle" en "Change Mix Mode"): een
-            // keuzelijst tonen, tenzij er maar 1 optie is (dan is het feitelijk een
-            // momentane actieknop, zelfde gedrag als elders in de app).
+            // Show a choice list, unless there's only one option, in which case it acts as a
+            // plain action button (same behavior as elsewhere in the app).
             actions.choices != null -> {
                 val choices = actions.choices
                 if (choices.items.size == 1) {
@@ -400,12 +399,8 @@ class NowPlayingFragment :
                 connectionHelper.executeAction(playerId, actions.doAction)
             }
 
-            // Een goAction mét nextWindow is bedoeld als "voer uit en keer terug" (bijv.
-            // SugarCube's enable_disable/flipmode/mixfromhere, die allemaal nextWindow=
-            // nowPlaying hebben) - geen navigatie naar een nieuw browse-scherm, zoals
-            // onContextMenuAction/handleGoAction dat wel doet. Zelfde onderscheid als
-            // MainContentContainerFragment.onHandleDoOrGoAction al maakt voor de gewone
-            // menu's elders in de app.
+            // A goAction with nextWindow means "execute and return", not navigation to a new
+            // browse screen (unlike onContextMenuAction/handleGoAction).
             actions.goAction != null && actions.goAction.nextWindow != null -> lifecycleScope.launch {
                 connectionHelper.executeAction(playerId, actions.goAction)
             }
@@ -428,8 +423,8 @@ class NowPlayingFragment :
         val job = lifecycleScope.launch {
             connectionHelper.executeAction(playerId, choice)
         }
-        // De keuzelijst sluit zichzelf al (via BaseBottomSheet.handleAction); het onderliggende
-        // info-menu ("song_info") moet apart gesloten worden zodra de keuze is uitgevoerd.
+        // The choice list closes itself (via BaseBottomSheet.handleAction); the underlying
+        // info menu ("song_info") needs to be closed separately once the choice runs.
         job.invokeOnCompletion {
             (childFragmentManager.findFragmentByTag("song_info") as? DialogFragment)
                 ?.dismissAllowingStateLoss()
@@ -439,11 +434,9 @@ class NowPlayingFragment :
 
     // Private implementation details
 
-    // "Toggle SugarCube" en "Change Mix Mode" flippen direct een instelling zonder bevestiging
-    // of zichtbare huidige status (zie punt over ontbrekende waarde-weergave) - bij een
-    // onbedoelde tik/veeg in het info-menu verandert de SugarCube-plugin dus ongemerkt van
-    // gedrag. Verbergen hier; de volledige, veilige bediening (met huidige status en
-    // keuzepicker) blijft beschikbaar via Instellingen -> SugarCube.
+    // "Toggle SugarCube" and "Change Mix Mode" flip a setting directly with no confirmation or
+    // visible current state; hidden here. Full, safer control remains available via
+    // Settings -> SugarCube.
     private fun SlimBrowseItemList.SlimBrowseItem.isRiskySugarCubeSettingToggle(): Boolean {
         val cmd = actions?.goAction?.cmd ?: return false
         return cmd.getOrNull(0) == "sugarcube" &&

@@ -108,18 +108,19 @@ import kotlinx.coroutines.flow.onEach
 import kotlinx.coroutines.guava.await
 import kotlinx.coroutines.guava.future
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Semaphore
+import kotlinx.coroutines.sync.withPermit
 import kotlinx.coroutines.withTimeoutOrNull
 import androidx.media3.session.MediaLibraryService.MediaLibrarySession
 import androidx.media3.session.SessionError
 
-// Gedeelde cache die artwork-URL's (HTTP) omzet naar content://-URI's (via AlbumArtFileProvider)
-// plus verkleinde JPEG-bytes. Wordt zowel door MediaService (browse tree / favorieten) als door
-// SqueezeboxPlayer (now playing / afspeellijst) gebruikt, zodat eenzelfde plaatje maar één keer
-// hoeft te worden opgehaald. Android Auto/AAOS vereisen een lokale content://-URI die ze zelf via
-// ContentResolver kunnen resolven vanuit hun eigen proces; een kale https-URL of een embedded
-// bitmap wordt door die surfaces niet (betrouwbaar) gebruikt. MediaMetadataCompat-artwork (voor
-// lockscreen/notificatie) gaat via Binder-IPC naar het ontvangende proces, met een harde limiet
-// van ~1MB per transactie; vandaar het verkleinen + JPEG-comprimeren.
+// Shared cache converting artwork URLs (HTTP) to content:// URIs (via AlbumArtFileProvider)
+// plus downscaled JPEG bytes. Used by both MediaService (browse tree / favorites) and
+// SqueezeboxPlayer (now playing / playlist) so each image is fetched only once. Android
+// Auto/AAOS need a local content:// URI they can resolve via ContentResolver from their own
+// process; a plain https URL or embedded bitmap isn't reliably used by those surfaces.
+// MediaMetadataCompat artwork (for lockscreen/notification) goes via Binder IPC to the
+// receiving process, with a hard ~1MB per-transaction limit, hence the downscale + JPEG compress.
 @OptIn(UnstableApi::class)
 private class AlbumArtworkCache(
     private val appContext: Context,
@@ -131,21 +132,28 @@ private class AlbumArtworkCache(
     private val uriCache = mutableMapOf<String, Uri>()
     private val fetchesInProgress = mutableSetOf<String>()
 
+    // Bounds how many artwork images are decoded (as full-size Bitmaps) at once. Without this,
+    // loading a large playlist fires one concurrent decode per track, spiking native memory.
+    private val decodeSemaphore = Semaphore(4)
+
     fun dataFor(url: String): ByteArray? = dataCache[url]
     fun uriFor(url: String): Uri? = uriCache[url]
 
     fun prefetch(url: String) {
         if (uriCache.containsKey(url) || !fetchesInProgress.add(url)) return
-        Log.d(TAG, "Artwork prefetch gestart voor $url")
+        Log.d(TAG, "Artwork prefetch started for $url")
         scope.launch {
             try {
-                val bitmap = bitmapLoader.loadBitmap(url.toUri()).await()
-                val scaled = scaleForEmbedding(bitmap)
-                val bytes = ByteArrayOutputStream().use { stream ->
-                    scaled.compress(Bitmap.CompressFormat.JPEG, 90, stream)
-                    stream.toByteArray()
+                val bytes = decodeSemaphore.withPermit {
+                    val bitmap = bitmapLoader.loadBitmap(url.toUri()).await()
+                    val scaled = scaleForEmbedding(bitmap)
+                    val result = ByteArrayOutputStream().use { stream ->
+                        scaled.compress(Bitmap.CompressFormat.JPEG, 90, stream)
+                        stream.toByteArray()
+                    }
+                    if (scaled !== bitmap) bitmap.recycle()
+                    result
                 }
-                if (scaled !== bitmap) scaled.recycle()
 
                 val cacheDir = File(appContext.cacheDir, "album_art_cache").apply { mkdirs() }
                 val file = File(cacheDir, "${url.hashCode()}.jpg")
@@ -158,10 +166,10 @@ private class AlbumArtworkCache(
 
                 dataCache[url] = bytes
                 uriCache[url] = contentUri
-                Log.d(TAG, "Artwork prefetch gelukt voor $url (${bytes.size} bytes) -> $contentUri")
+                Log.d(TAG, "Artwork prefetch succeeded for $url (${bytes.size} bytes) -> $contentUri")
                 onArtworkReady()
             } catch (e: Exception) {
-                Log.w(TAG, "Artwork prefetch mislukt voor $url", e)
+                Log.w(TAG, "Artwork prefetch failed for $url", e)
             } finally {
                 fetchesInProgress.remove(url)
             }
@@ -183,8 +191,8 @@ private class AlbumArtworkCache(
     }
 }
 
-// Voor now playing/afspeellijst-items: zowel de content-URI (voor AA/AAOS) als de embedded
-// JPEG-bytes (voor lockscreen/notificatie) meegeven.
+// For now playing/playlist items: provide both the content URI (for AA/AAOS) and the
+// embedded JPEG bytes (for lockscreen/notification).
 @OptIn(UnstableApi::class)
 private fun MediaMetadata.Builder.applyArtworkUriAndData(
     cache: AlbumArtworkCache,
@@ -196,9 +204,9 @@ private fun MediaMetadata.Builder.applyArtworkUriAndData(
     cache.dataFor(url)?.let { setArtworkData(it, MediaMetadata.PICTURE_TYPE_FRONT_COVER) }
 }
 
-// Voor browse-tree-items (favorieten): alleen de content-URI meegeven. Google's eigen richtlijn
-// waarschuwt expliciet tegen embedded bitmaps voor lijst-items (setIconBitmap/setArtworkData) i.v.m.
-// de binder-limiet en omdat het op AAOS niet wordt ondersteund.
+// For browse-tree items (favorites): provide only the content URI. Google's own guideline
+// warns against embedded bitmaps for list items (setIconBitmap/setArtworkData) due to the
+// binder limit and lack of AAOS support.
 @OptIn(UnstableApi::class)
 private fun MediaMetadata.Builder.applyArtworkUri(
     cache: AlbumArtworkCache,
@@ -224,14 +232,12 @@ class MediaService :
     private var isConnectedToCar = false
     private var favoritesRefreshJob: Job? = null
 
-    // Eén keer opgehaalde, stabiele volgorde (mediaId's) van de favorietenlijst. Zonder deze
-    // cache deed elke onGetChildren(NODE_FAVORITES, ...)-aanroep (één per pagina, en AA vraagt
-    // per pagina apart op) een nieuwe LMS-fetch; als die fetches niet perfect identiek geordend
-    // terugkomen (of elkaar overlappen doordat notifyChildrenChanged tijdens het laden van
-    // iconen vuurt), kregen opeenvolgende pagina's data uit verschillende "snapshots" — vandaar
-    // de door elkaar gehusselde volgorde in AA. De MediaItems zelf worden wel telkens vers
-    // opgebouwd (uit favoriteItemCache, geen netwerk nodig) zodat net binnengekomen iconen
-    // direct meegenomen worden.
+    // Stable, fetched-once order (mediaIds) of the favorites list. Without this cache, each
+    // onGetChildren(NODE_FAVORITES, ...) call (one per page, requested separately by AA) would
+    // trigger a new LMS fetch; if fetches aren't returned in identical order, consecutive pages
+    // could get data from different snapshots, shuffling the order in AA. The MediaItems
+    // themselves are always rebuilt fresh (from favoriteItemCache, no network needed) so newly
+    // arrived icons are included immediately.
     private var cachedFavoriteOrder: List<String>? = null
     private var cachedFavoritesPlayerId: PlayerId? = null
 
@@ -255,10 +261,9 @@ class MediaService :
                 .build()
         )
         artworkCache = AlbumArtworkCache(applicationContext, cacheBitmapLoader, lifecycleScope) {
-            // Kan voor now-playing-artwork of voor een favoriet zijn; beide kanten simpelweg
-            // laten verversen is goedkoop en voorkomt dat we moeten bijhouden welke van de twee
-            // het was. notifyChildrenChanged debouncen we, want bij bv. 13 favorieten komen de
-            // iconen kort na elkaar binnen en willen we niet 13x achter elkaar verversen.
+            // Could be now-playing artwork or a favorite; refreshing both sides is cheap and
+            // avoids tracking which one it was. notifyChildrenChanged is debounced since icons
+            // for e.g. 13 favorites arrive close together and shouldn't trigger 13 refreshes.
             player.notifyArtworkUpdated()
             favoritesRefreshJob?.cancel()
             favoritesRefreshJob = lifecycleScope.launch {
@@ -290,17 +295,16 @@ class MediaService :
             }
         }
 
-        // Zodra Squeeze Client's eigen lokale speler begint met afspelen, daar automatisch naar
-        // overschakelen als bediende speler. Zonder dit blijft AA (en de rest van de UI) een
-        // eventueel eerder geselecteerde, andere speler proberen te bedienen, terwijl je
-        // feitelijk het geluid van de lokale speler hoort — precies zoals de "voorkeurspeler
-        // krijgt voorrang bij starten"-instelling in Lyrion's Material skin.
-        // Herkenning gebeurt via de modelnaam "squeezeclient" die alleen onze eigen lokale
-        // speler meldt (zie SlimprotoSocket.sendHello). Bewust géén IP-matching en géén
-        // detectie van andere lokale spelers (zoals een los geïnstalleerde Squeezelite-app):
-        // AA claimt audiofocus voor Squeeze Client zodra die speler actief is, wat een andere
-        // app op hetzelfde toestel dan gewoon pauzeert (per-app audiofocus-conflict, niet
-        // oplosbaar vanuit onze code).
+        // When Squeeze Client's own local player starts playing, automatically switch to it as
+        // the controlled player. Otherwise AA (and the rest of the UI) keeps trying to control a
+        // previously selected, different player while the audio actually comes from the local
+        // player - matching the "preferred player takes priority on start" setting in Lyrion's
+        // Material skin.
+        // Detection uses the model name "squeezeclient" reported only by our own local player
+        // (see SlimprotoSocket.sendHello). Deliberately no IP matching and no detection of other
+        // local players (e.g. a standalone Squeezelite app): AA claims audio focus for Squeeze
+        // Client once that player is active, which simply pauses another app on the same device
+        // (a per-app audio focus conflict that can't be resolved from our code).
         lifecycleScope.launch {
             repeatOnLifecycle(Lifecycle.State.STARTED) {
                 connectionHelper.state
@@ -310,13 +314,13 @@ class MediaService :
                     .onEach { candidates ->
                         Log.d(
                             TAG,
-                            "Lokale spelerskandidaten: " +
+                            "Local player candidates: " +
                                 candidates.joinToString { "${it.id.id} (${it.name})" }
                         )
-                        // Ook bijhouden los van het auto-switch-moment: bepaalt of getState()
-                        // straks PLAYBACK_TYPE_LOCAL i.p.v. PLAYBACK_TYPE_REMOTE rapporteert
-                        // (zie SqueezeboxPlayer.localPlayerIds), zodat AA niet "op een ander
-                        // apparaat" toont wanneer het geluid feitelijk gewoon lokaal speelt.
+                        // Also tracked independently of the auto-switch moment: determines
+                        // whether getState() reports PLAYBACK_TYPE_LOCAL instead of
+                        // PLAYBACK_TYPE_REMOTE (see SqueezeboxPlayer.localPlayerIds), so AA
+                        // doesn't show "on another device" when the audio is actually local.
                         player.localPlayerIds = candidates.map { it.id }.toSet()
                     }
                     .flatMapLatest { candidates ->
@@ -331,9 +335,9 @@ class MediaService :
                         }
                     }
                     .collectLatest { (candidateId, playbackState) ->
-                        // Als "Only control default" aan staat: nooit automatisch wisselen,
-                        // ook niet naar de lokale speler - de gebruiker wil juist altijd
-                        // dezelfde, vooraf gekozen speler bedienen zonder verrassingen.
+                        // With "Only control default" enabled: never auto-switch, not even to
+                        // the local player - the user wants to always control the same,
+                        // pre-chosen player without surprises.
                         val restrictedToOtherPlayer = prefs.onlyControlDefaultPlayer &&
                             prefs.defaultPlayer != null &&
                             prefs.defaultPlayer != candidateId
@@ -344,8 +348,8 @@ class MediaService :
                         ) {
                             Log.d(
                                 TAG,
-                                "Lokale speler $candidateId is gestart met afspelen, " +
-                                    "overschakelen als actieve speler"
+                                "Local player $candidateId started playing, " +
+                                    "switching to it as active player"
                             )
                             player.currentPlayer = candidateId
                             prefs.edit { putLastSelectedPlayer(candidateId) }
@@ -354,25 +358,22 @@ class MediaService :
             }
         }
 
-        // Bij "Only control default" altijd de gekozen standaardspeler gebruiken i.p.v. de
-        // laatst geselecteerde - dat is precies het punt van deze instelling: geen wisselend
-        // gedrag, altijd dezelfde speler. Zonder gekozen standaardspeler blijft het bestaande
-        // gedrag (laatst gebruikte speler) ongewijzigd.
+        // With "Only control default" always use the chosen default player instead of the
+        // last selected one - that's the point of this setting: no switching behavior, always
+        // the same player. Without a chosen default player, the last-used player is used.
         player.currentPlayer = prefs.defaultPlayer?.takeIf { prefs.onlyControlDefaultPlayer }
             ?: prefs.lastSelectedPlayer
 
-        // Alleen de Mix-knoppen tonen. Power/disconnect stonden er ook nog in (leftover uit
-        // eerdere iteraties), maar zijn nooit de bedoeling geweest voor deze knoppenrij.
-        // Preset-knoppen (Squeezebox-stijl, zoals de fysieke knoppen op een Boom) worden er
-        // achteraan toegevoegd op basis van de "aa_preset_button_count"-instelling (0 = uit).
+        // Only show the Mix buttons. Preset buttons (Squeezebox-style, like the physical
+        // buttons on a Boom) are appended based on the "aa_preset_button_count" setting (0 = off).
         customLayout = listOf(
             CommandButton.Builder(CommandButton.ICON_UNDEFINED)
-                .setDisplayName("Mix starten")
+                .setDisplayName("Start Mix")
                 .setCustomIconResId(R.drawable.ic_sugarcube_mix_24dp)
                 .setSessionCommand(SessionCommand(SESSION_ACTION_START_MIX, bundleOf()))
                 .build(),
             CommandButton.Builder(CommandButton.ICON_UNDEFINED)
-                .setDisplayName("Willekeurige mix")
+                .setDisplayName("Random Mix")
                 .setCustomIconResId(R.drawable.ic_shuffle_song_24dp)
                 .setSessionCommand(SessionCommand(SESSION_ACTION_START_RANDOM_MIX, bundleOf()))
                 .build()
@@ -392,10 +393,10 @@ class MediaService :
             .build()
         addSession(mediaSession)
 
-        // Stop de weergave zodra de auto/head unit loskoppelt, zodat muziek niet ongemerkt
-        // doorspeelt op de telefoon zelf. CarConnection meldt betrouwbaar de connectiviteit met
-        // een auto (Android Auto via projectie of Android Automotive OS native), onafhankelijk
-        // van welke MediaSession-controllers er verder verbonden zijn/blijven.
+        // Stop playback as soon as the car/head unit disconnects, so music doesn't keep
+        // playing unnoticed on the phone itself. CarConnection reliably reports car
+        // connectivity (Android Auto via projection or Android Automotive OS native),
+        // independent of which MediaSession controllers remain connected.
         CarConnection(this).type.observe(this) { type ->
             val nowConnected = type != CarConnection.CONNECTION_TYPE_NOT_CONNECTED
             Log.d(
@@ -406,38 +407,38 @@ class MediaService :
             if (isConnectedToCar && !nowConnected) {
                 val playerId = player.currentPlayer
                 if (playerId == null) {
-                    Log.w(TAG, "Auto losgekoppeld, maar geen currentPlayer bekend - geen stop verstuurd")
+                    Log.w(TAG, "Car disconnected, but no currentPlayer known - no stop sent")
                 } else {
-                    // Zie SqueezeboxPlayer.pendingResumePositionMs: het stop-commando hieronder
-                    // reset de positie op de server naar 0, dus die eerst bewaren.
+                    // See SqueezeboxPlayer.pendingResumePositionMs: the stop command below
+                    // resets the position on the server to 0, so save it first.
                     player.pendingResumePositionMs = player.contentPosition
-                    Log.d(TAG, "Auto losgekoppeld, stop-commando sturen naar $playerId")
+                    Log.d(TAG, "Car disconnected, sending stop command to $playerId")
                     lifecycleScope.launch {
                         try {
                             connectionHelper.changePlaybackState(
                                 playerId,
                                 PlayerStatus.PlayState.Stopped
                             )
-                            Log.d(TAG, "Stop-commando naar $playerId verstuurd")
+                            Log.d(TAG, "Stop command sent to $playerId")
                         } catch (e: Exception) {
-                            Log.w(TAG, "Stop-commando naar $playerId mislukt", e)
+                            Log.w(TAG, "Stop command to $playerId failed", e)
                         }
                     }
-                    // De lokale speler reageert niet op server-side stop/power - de
-                    // foreground service (ExoPlayer + serverconnectie + notificatie) blijft
-                    // anders gewoon draaien terwijl er niemand meer luistert. Bevestigd
-                    // accuverbruik (~8% over 28u bij amper gebruik) - daarom hier expliciet
-                    // stoppen i.p.v. alleen de afspeelstatus. Komt vanzelf terug zodra de
-                    // auto opnieuw verbindt (zie hieronder).
+                    // The local player doesn't react to server-side stop/power - the
+                    // foreground service (ExoPlayer + server connection + notification) would
+                    // otherwise keep running while nobody is listening. Confirmed battery
+                    // usage (~8% over 28h with barely any use) - hence stopping it explicitly
+                    // here instead of just the playback status. Comes back automatically once
+                    // the car reconnects (see below).
                     if (playerId in player.localPlayerIds) {
-                        Log.d(TAG, "Actieve speler was de lokale speler, LocalPlaybackService stoppen")
+                        Log.d(TAG, "Active player was the local player, stopping LocalPlaybackService")
                         stopService(Intent(this, LocalPlaybackService::class.java))
                     }
                 }
             } else if (!isConnectedToCar && nowConnected && prefs.localPlayerEnabled) {
-                // Auto net verbonden: de lokale speler kan hierboven gestopt zijn - zorg dat
-                // 'ie weer beschikbaar is voor het geval hij (opnieuw) nodig is.
-                Log.d(TAG, "Auto verbonden, LocalPlaybackService weer opstarten indien nodig")
+                // Car just connected: the local player may have been stopped above - make
+                // sure it's available again in case it's needed.
+                Log.d(TAG, "Car connected, restarting LocalPlaybackService if needed")
                 LocalPlaybackService.triggerStartOrStop(this)
             }
             isConnectedToCar = nowConnected
@@ -452,14 +453,14 @@ class MediaService :
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         dispatcher.onServicePreSuperOnStart()
         if (intent?.action == ACTION_START_WITH_PLAYER) {
-            // start() (companion object) roept startForegroundService() aan, wat Android
-            // verplicht dat we binnen enkele seconden Service.startForeground() aanroepen -
-            // anders volgt een ANR die de hele service (en daarmee de AA-sessie) om zeep helpt.
-            // Media3's eigen notificatielogica promoveert pas naar foreground zodra de speler
-            // daadwerkelijk "playing" wordt; als die overgang te lang duurt (bv. bij het
-            // forceren van de local player terwijl een andere speler nog vastzit), komt die
-            // belofte te laat. Daarom hier meteen een minimale placeholder-notificatie zetten;
-            // Media3 vervangt de inhoud vanzelf zodra de echte afspeelstatus bekend is.
+            // start() (companion object) calls startForegroundService(), which requires
+            // Service.startForeground() to be called within a few seconds - otherwise an ANR
+            // follows that kills the whole service (and with it the AA session).
+            // Media3's own notification logic only promotes to foreground once the player
+            // actually becomes "playing"; if that transition takes too long (e.g. when
+            // forcing the local player while another player is still stuck), it arrives too
+            // late. So set a minimal placeholder notification here immediately; Media3
+            // replaces the content once the real playback status is known.
             promoteToForegroundImmediately()
             val playerId = requireNotNull(
                 IntentCompat.getParcelableExtra(intent, "playerId", PlayerId::class.java)
@@ -484,7 +485,7 @@ class MediaService :
                 ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PLAYBACK
             )
         } catch (e: Exception) {
-            Log.w(TAG, "Direct promoten naar foreground mislukt", e)
+            Log.w(TAG, "Immediate foreground promotion failed", e)
         }
     }
 
@@ -526,27 +527,27 @@ class MediaService :
             .build()
     }
 
-    // Playback resumption (Media3/AA): zonder deze override moet de gebruiker bij het
-    // opstarten altijd eerst zelf iets kiezen (bv. een favoriet) voordat er iets afspeelt -
-    // AA heeft dan geen idee wat "hervatten" zou moeten betekenen. We geven hier bewust maar
-    // één mediaitem terug (het huidige nummer): zodra de echte, live serverstatus binnenkomt
-    // overschrijft getState() dit toch met de volledige, actuele playlist. Het daadwerkelijk
-    // starten van de afspeelknop na deze aanroep loopt via handleSetPlayWhenReady, wat een
-    // echt play-commando naar de server stuurt voor de betreffende speler.
+    // Playback resumption (Media3/AA): without this override the user must always pick
+    // something themselves at startup (e.g. a favorite) before anything plays - AA has no
+    // idea what "resume" should mean. Deliberately return only one media item here (the
+    // current track): once the real, live server status arrives, getState() overwrites this
+    // with the full, current playlist anyway. Actually starting playback after this call
+    // goes through handleSetPlayWhenReady, which sends a real play command to the server for
+    // that player.
     @OptIn(UnstableApi::class)
     override fun onPlaybackResumption(
         mediaSession: MediaSession,
         controller: MediaSession.ControllerInfo
     ): ListenableFuture<MediaSession.MediaItemsWithStartPosition> = lifecycleScope.future {
-        Log.d(TAG, "onPlaybackResumption aangeroepen door ${controller.packageName}")
+        Log.d(TAG, "onPlaybackResumption called by ${controller.packageName}")
         val playerId = prefs.defaultPlayer?.takeIf { prefs.onlyControlDefaultPlayer }
             ?: prefs.lastSelectedPlayer
             ?: player.currentPlayer
             ?: run {
-                Log.w(TAG, "onPlaybackResumption: geen speler bekend om te hervatten")
-                throw UnsupportedOperationException("Geen speler bekend om te hervatten")
+                Log.w(TAG, "onPlaybackResumption: no player known to resume")
+                throw UnsupportedOperationException("No player known to resume")
             }
-        Log.d(TAG, "onPlaybackResumption: hervatten met speler $playerId")
+        Log.d(TAG, "onPlaybackResumption: resuming with player $playerId")
         if (player.currentPlayer != playerId) {
             player.currentPlayer = playerId
         }
@@ -559,10 +560,10 @@ class MediaService :
             result
         }
         if (resumption == null) {
-            Log.w(TAG, "onPlaybackResumption: timeout, geen live status ontvangen binnen ${RESUMPTION_STATUS_TIMEOUT_MS}ms")
-            throw UnsupportedOperationException("Geen actieve status om te hervatten")
+            Log.w(TAG, "onPlaybackResumption: timeout, no live status received within ${RESUMPTION_STATUS_TIMEOUT_MS}ms")
+            throw UnsupportedOperationException("No active status to resume")
         }
-        Log.d(TAG, "onPlaybackResumption: hervatting geslaagd, startPositionMs=${resumption.startPositionMs}")
+        Log.d(TAG, "onPlaybackResumption: resumption succeeded, startPositionMs=${resumption.startPositionMs}")
         resumption
     }
 
@@ -614,10 +615,10 @@ class MediaService :
         browser: MediaSession.ControllerInfo,
         params: LibraryParams?
     ): ListenableFuture<LibraryResult<MediaItem>> {
-        // AA vraagt dit op voor het "Voor jou"-paneel op het dashboard. Leveren we hier geen
-        // eigen root, dan valt AA terug op zijn eigen logica (iets plukken van de bovenkant
-        // van de browse-boom, wat als willekeurig aanvoelt). Door zelf een vaste, voorspelbare
-        // selectie te geven (dezelfde volgorde als de Favorieten-lijst) voorkomen we dat.
+        // AA requests this for the "For you" panel on the dashboard. If we don't supply our
+        // own root here, AA falls back to its own logic (picking something from the top of
+        // the browse tree, which feels random). Providing a fixed, predictable selection
+        // (same order as the Favorites list) avoids that.
         if (params?.isSuggested == true) {
             val suggestedParams = LibraryParams.Builder().setSuggested(true).build()
             return Futures.immediateFuture(LibraryResult.ofItem(suggestedRootItem(), suggestedParams))
@@ -654,9 +655,9 @@ class MediaService :
             parentId.startsWith(FAVORITE_PREFIX) -> fetchFavoriteActionChildren(playerId, parentId)
             else -> emptyList()
         }
-        // page/pageSize moeten gerespecteerd worden: als we altijd de volledige lijst
-        // teruggeven, negeert Android Auto onze volgorde en stelt het zelf (verkeerd) een
-        // opeenvolging van "pagina's" samen uit wat feitelijk steeds dezelfde volledige lijst is.
+        // page/pageSize must be respected: if we always return the full list, Android Auto
+        // ignores our order and assembles its own (incorrect) sequence of "pages" from what
+        // is actually the same full list every time.
         val startIndex = (page.toLong() * pageSize).coerceIn(0, items.size.toLong()).toInt()
         val endIndex = (startIndex.toLong() + pageSize).coerceIn(startIndex.toLong(), items.size.toLong())
             .toInt()
@@ -697,7 +698,7 @@ class MediaService :
             MediaMetadata.Builder()
                 .setIsBrowsable(true)
                 .setIsPlayable(false)
-                .setTitle("Favorieten")
+                .setTitle("Favorites")
                 .build()
         )
         .build()
@@ -708,14 +709,14 @@ class MediaService :
             MediaMetadata.Builder()
                 .setIsBrowsable(true)
                 .setIsPlayable(false)
-                .setTitle("Voor jou")
+                .setTitle("For You")
                 .build()
         )
         .build()
 
-    // Zelfde, stabiele volgorde als de Favorieten-lijst (dus geen aparte fetch/cache nodig) —
-    // de eerste MAX_SUGGESTED_ITEMS daarvan, zodat AA's "Voor jou"-paneel iets voorspelbaars
-    // toont in plaats van zelf willekeurig door de browse-boom te bladeren.
+    // Same stable order as the Favorites list (so no separate fetch/cache needed) - the
+    // first MAX_SUGGESTED_ITEMS of it, so AA's "For You" panel shows something predictable
+    // instead of browsing the browse tree randomly on its own.
     private suspend fun fetchSuggestedChildren(playerId: PlayerId): List<MediaItem> =
         fetchFavoriteChildren(playerId).take(MAX_SUGGESTED_ITEMS)
 
@@ -723,8 +724,8 @@ class MediaService :
         val orderedIds = cachedFavoriteOrder?.takeIf { cachedFavoritesPlayerId == playerId }
             ?: run {
                 val homeMenu = connectionHelper.fetchHomeMenu(playerId)
-                // TODO verify: aanname dat het Favorieten-item als id "favorites" heeft. Zo
-                // niet, pas de key hieronder aan (of laat de title-fallback het werk doen).
+                // TODO verify: assumes the Favorites item has id "favorites". If not, adjust
+                // the key below (or let the title fallback handle it).
                 val favoritesEntry = homeMenu["favorites"] ?: homeMenu.values.firstOrNull {
                     it.title.contains("favoriet", ignoreCase = true) ||
                             it.title.contains("favorite", ignoreCase = true)
@@ -738,11 +739,11 @@ class MediaService :
                     false
                 )
 
-                // De server geeft favorieten terug in hun eigen (handmatige/opslag-)volgorde,
-                // niet alfabetisch - Lyrion's Material-webskin sorteert dat zelf alfabetisch
-                // voordat het getoond wordt. Hier hetzelfde doen, zodat AA (en het "Voor
-                // jou"-paneel, dat deze lijst hergebruikt) overeenkomt met wat je in Material
-                // ziet in plaats van de ruwe, ogenschijnlijk willekeurige serverstate.
+                // The server returns favorites in their own (manual/storage) order, not
+                // alphabetically - Lyrion's Material web skin sorts them alphabetically
+                // itself before displaying. Do the same here, so AA (and the "For You"
+                // panel, which reuses this list) matches what's shown in Material instead of
+                // the raw, seemingly random server state.
                 val sortedItems = result.items.sortedBy { it.title.lowercase() }
 
                 favoriteItemCache.clear()
@@ -787,7 +788,7 @@ class MediaService :
         val actions = favoriteItem.actions ?: return emptyList()
         val children = mutableListOf<MediaItem>()
 
-        // "Afspelen": de normale go/play-actie van deze favoriet zelf
+        // "Play": the normal go/play action of this favorite itself
         (actions.playAction ?: actions.goAction)?.let { playAction ->
             val actionId = "${parentId}_play"
             favoriteActionCache[actionId] = playAction
@@ -795,7 +796,7 @@ class MediaService :
                 .setMediaId(actionId)
                 .setMediaMetadata(
                     MediaMetadata.Builder()
-                        .setTitle("Afspelen")
+                        .setTitle("Play")
                         .setIsBrowsable(false)
                         .setIsPlayable(true)
                         .build()
@@ -803,8 +804,8 @@ class MediaService :
                 .build()
         }
 
-        // Context-menu (bijv. SugarCube "mix starten"), zelfde mechanisme als de
-        // info-knop op het now-playing-scherm.
+        // Context menu (e.g. SugarCube "start mix"), same mechanism as the info button on
+        // the now-playing screen.
         actions.moreAction?.let { moreAction ->
             val contextItems = connectionHelper.fetchItemsForAction(
                 playerId,
@@ -836,9 +837,9 @@ class MediaService :
         return children
     }
 
-    // Wordt aangeroepen zodra AA een item (bijv. "Mix starten") daadwerkelijk selecteert.
-    // We onderscheppen onze eigen actie-items en sturen ze naar de server i.p.v. ze als
-    // normaal afspeelitem te behandelen.
+    // Called when AA actually selects an item (e.g. "Start Mix"). We intercept our own
+    // action items and send them to the server instead of treating them as a normal
+    // playable item.
     @OptIn(UnstableApi::class)
     override fun onAddMediaItems(
         session: MediaSession,
@@ -858,8 +859,8 @@ class MediaService :
         remaining
     }
 
-    // Wordt aangeroepen wanneer AA een "Afspelen"-tik doet (playFromMediaId). Media3
-    // vertaalt die legacy-aanroep naar onSetMediaItems, niet naar onAddMediaItems.
+    // Called when AA does a "Play" tap (playFromMediaId). Media3 translates that legacy
+    // call to onSetMediaItems, not onAddMediaItems.
     @OptIn(UnstableApi::class)
     override fun onSetMediaItems(
         session: MediaSession,
@@ -884,24 +885,24 @@ class MediaService :
             if (action != null && playerId != null) {
                 try {
                     connectionHelper.fetchItemsForAction(playerId, action, PagingParams.All, false)
-                    Log.d(TAG, "onSetMediaItems: actie voor ${mediaItem.mediaId} verstuurd")
+                    Log.d(TAG, "onSetMediaItems: action for ${mediaItem.mediaId} sent")
                 } catch (e: Exception) {
-                    Log.w(TAG, "onSetMediaItems: actie voor ${mediaItem.mediaId} mislukt", e)
+                    Log.w(TAG, "onSetMediaItems: action for ${mediaItem.mediaId} failed", e)
                 }
             } else {
                 Log.w(
                     TAG,
-                    "onSetMediaItems: geen actie/speler voor ${mediaItem.mediaId} " +
-                        "(action=$action, playerId=$playerId) - item wordt ongewijzigd doorgegeven"
+                    "onSetMediaItems: no action/player for ${mediaItem.mediaId} " +
+                        "(action=$action, playerId=$playerId) - item passed through unchanged"
                 )
             }
         }
         MediaSession.MediaItemsWithStartPosition(mediaItems, startIndex, startPositionMs)
     }
 
-    // Wordt aangeroepen via de "Mix starten"-knop op het AA Now Playing-scherm. Haalt het
-    // contextmenu van het huidige nummer op (zelfde bron als de info-knop in
-    // NowPlayingFragment.kt) en voert de SugarCube "mix vanaf hier"-actie direct uit.
+    // Called via the "Start Mix" button on the AA Now Playing screen. Fetches the context
+    // menu of the current track (same source as the info button in NowPlayingFragment.kt)
+    // and directly executes the SugarCube "mix from here" action.
     private suspend fun startSugarCubeMix() {
         val playerId = player.currentPlayer ?: return
         val moreAction = player.currentSongActions?.moreAction ?: return
@@ -913,18 +914,18 @@ class MediaService :
         connectionHelper.fetchItemsForAction(playerId, mixAction, PagingParams.All, false)
     }
 
-    // Wordt aangeroepen via de "Willekeurige mix"-knop op het AA Now Playing-scherm. Dit is
-    // Lyrion's eigen, ingebouwde Random Mix-plugin (los van SugarCube) — het meest rudimentaire
-    // principe om willekeurig door de hele bibliotheek te spelen. Zelfde aanpak als
-    // startSugarCubeMix(): eerst het homemenu-item opzoeken, dan in het submenu dat opent de
-    // "Track Mix"-optie zoeken (cmd ["randomplay","tracks"]) en die direct uitvoeren.
+    // Called via the "Random Mix" button on the AA Now Playing screen. This is Lyrion's own,
+    // built-in Random Mix plugin (separate from SugarCube) - the most basic way to play
+    // randomly through the whole library. Same approach as startSugarCubeMix(): look up the
+    // homemenu item first, then find the "Track Mix" option in the submenu it opens (cmd
+    // ["randomplay","tracks"]) and execute it directly.
     private suspend fun startRandomTrackMix() {
         val playerId = player.currentPlayer ?: return
         val homeMenu = connectionHelper.fetchHomeMenu(playerId)
-        // "randomplay" zelf is puur een categorie-header zonder eigen actie. De daadwerkelijke
-        // mixtypes (Nummermix, Albummix, Artiestenmix, ...) staan als losse sibling-items in
-        // hetzelfde homemenu. "randomtracks" (Nummermix) is de simpele "speel willekeurig door
-        // je hele bibliotheek"-variant die hier bedoeld is.
+        // "randomplay" itself is purely a category header with no action of its own. The
+        // actual mix types (Track Mix, Album Mix, Artist Mix, ...) are separate sibling
+        // items in the same homemenu. "randomtracks" (Track Mix) is the simple "play
+        // randomly through your whole library" variant intended here.
         val trackMixEntry = homeMenu["randomtracks"] ?: homeMenu.values.firstOrNull {
             it.title.contains("nummermix", ignoreCase = true) ||
                 it.title.contains("track mix", ignoreCase = true)
@@ -933,11 +934,11 @@ class MediaService :
         connectionHelper.fetchItemsForAction(playerId, action, PagingParams.All, false)
     }
 
-    // Bouwt de rij preset-knoppen (Squeezebox-stijl: preset_1.single t/m preset_10.single) op
-    // basis van de "aa_preset_button_count"-instelling (0 = geen knoppen, dus feature uit).
-    // AA toont deze knoppen (zodra ze niet meer in de hoofdbalk passen) in een uitklap-menu
-    // waarin alleen het icoon zichtbaar is, niet de displayName-tekst - vandaar per slot een
-    // apart genummerd icoontje in plaats van één gedeeld preset-icoon.
+    // Builds the row of preset buttons (Squeezebox-style: preset_1.single through
+    // preset_10.single) based on the "aa_preset_button_count" setting (0 = no buttons,
+    // feature off). AA shows these buttons (once they no longer fit in the main bar) in an
+    // overflow menu where only the icon is visible, not the displayName text - hence a
+    // separately numbered icon per slot instead of one shared preset icon.
     private fun presetCommandButtons(): List<CommandButton> =
         (1..prefs.androidAutoPresetButtonCount).map { slot ->
             CommandButton.Builder(CommandButton.ICON_UNDEFINED)
@@ -967,10 +968,11 @@ class MediaService :
         return action.removePrefix(SESSION_ACTION_PRESET_PREFIX).toIntOrNull()
     }
 
-    // Wordt aangeroepen via een "Preset N"-knop op het AA Now Playing-scherm. Dit stuurt exact
-    // hetzelfde CLI-commando als het indrukken van een fysieke preset-knop op bv. een Boom
-    // ("<playerid> button preset_N.single"), dus LMS regelt zelf welk favoriet/radiozender op
-    // die knop staat (in te stellen via Instellingen > Speler > Presets in de LMS-webinterface).
+    // Called via a "Preset N" button on the AA Now Playing screen. This sends exactly the
+    // same CLI command as pressing a physical preset button on e.g. a Boom
+    // ("<playerid> button preset_N.single"), so LMS itself determines which favorite/radio
+    // station is assigned to that button (configurable via Settings > Player > Presets in
+    // the LMS web interface).
     private suspend fun startPreset(slot: Int) {
         val playerId = player.currentPlayer ?: return
         connectionHelper.sendButtonRequest(PlaybackButtonRequest.Preset(playerId, slot))
@@ -1019,13 +1021,14 @@ class MediaService :
         private const val NODE_FAVORITES = "favorites"
         private const val NODE_SUGGESTED = "suggested"
         private const val FAVORITE_PREFIX = "fav_"
-        // Google's eigen richtlijn voor AA-recommendations: rond de 10 items aanbieden.
+        // Google's own guideline for AA recommendations: offer around 10 items.
         private const val MAX_SUGGESTED_ITEMS = 10
-        // Hoe lang op de eerste live serverstatus wachten bij playback resumption, voordat
-        // we het opgeven - de verbinding/subscriptie kan vlak na het opstarten nog onderweg zijn.
+        // How long to wait for the first live server status during playback resumption
+        // before giving up - the connection/subscription may still be in progress right
+        // after startup.
         private const val RESUMPTION_STATUS_TIMEOUT_MS = 5000L
-        // Hoe lang wachten tot de lokale speler weer "connected" is bij de server voordat een
-        // play-commando alsnog verstuurd wordt (zie handleSetPlayWhenReady hieronder).
+        // How long to wait for the local player to be "connected" to the server again
+        // before sending a play command anyway (see handleSetPlayWhenReady below).
         private const val LOCAL_PLAYER_RECONNECT_TIMEOUT_MS = 5000L
 
         fun start(context: Context, playerId: PlayerId) {
@@ -1045,13 +1048,13 @@ class MediaService :
         private val artworkCache: AlbumArtworkCache
     ) : SimpleBasePlayer(Looper.getMainLooper()),
         CoroutineScope by lifecycle.coroutineScope {
-        // Aangeroepen door AlbumArtworkCache zodra een prefetch klaar is, zodat AA/lockscreen/
-        // notificatie de bijgewerkte metadata (met artwork) te zien krijgen.
+        // Called by AlbumArtworkCache once a prefetch is done, so AA/lockscreen/notification
+        // see the updated metadata (with artwork).
         fun notifyArtworkUpdated() = invalidateState()
 
-        // Voor playback resumption (zie MediaService.onPlaybackResumption): het huidige
-        // nummer + positie op basis van de laatst bekende live status, of null als die er
-        // nog niet is (bv. vlak na het opstarten, voordat de subscriptie iets binnenkreeg).
+        // For playback resumption (see MediaService.onPlaybackResumption): the current
+        // track + position based on the last known live status, or null if there isn't one
+        // yet (e.g. right after startup, before the subscription received anything).
         fun resumptionMediaItemsWithStartPosition(): MediaSession.MediaItemsWithStartPosition? {
             val status = latestStatus ?: return null
             val currentSong = status.playlist.nowPlaying ?: return null
@@ -1061,11 +1064,11 @@ class MediaService :
             return MediaSession.MediaItemsWithStartPosition(listOf(mediaItem), 0, startPositionMs)
         }
 
-        // Bewaart de afspeelpositie op het moment dat de auto loskoppelt en we de speler
-        // stoppen (zie MediaService: CarConnection-observer). Een "stop"-commando reset de
-        // positie op de server naar 0, dus zonder dit begint hervatten na reconnect altijd
-        // weer bij het begin van het nummer i.p.v. waar het onderbroken werd. Wordt in
-        // handleSetPlayWhenReady verbruikt (en gewist) zodra er weer play gestuurd wordt.
+        // Stores the playback position at the moment the car disconnects and we stop the
+        // player (see MediaService: CarConnection observer). A "stop" command resets the
+        // position on the server to 0, so without this, resuming after reconnect always
+        // starts at the beginning of the track instead of where it was interrupted.
+        // Consumed (and cleared) in handleSetPlayWhenReady once play is sent again.
         var pendingResumePositionMs: Long? = null
 
         var currentPlayer: PlayerId? = null
@@ -1084,10 +1087,10 @@ class MediaService :
                 }
             }
 
-        // IDs van spelers die op dit toestel zelf draaien (herkend via modelnaam, zie
-        // MediaService.onCreate). Bepaalt of getState() PLAYBACK_TYPE_LOCAL rapporteert i.p.v.
-        // PLAYBACK_TYPE_REMOTE, zodat AA/Android geen "op een ander apparaat"-label tonen
-        // terwijl het geluid feitelijk gewoon op dit toestel speelt.
+        // IDs of players running on this device itself (recognized via model name, see
+        // MediaService.onCreate). Determines whether getState() reports PLAYBACK_TYPE_LOCAL
+        // instead of PLAYBACK_TYPE_REMOTE, so AA/Android don't show an "on another device"
+        // label while the audio is actually just playing on this device.
         var localPlayerIds: Set<PlayerId> = emptySet()
             set(value) {
                 if (field != value) {
@@ -1124,14 +1127,13 @@ class MediaService :
             connectionHelper.setMuteState(playerId, muted)
         }
 
-        // Zonder deze override gooit SimpleBasePlayer een IllegalStateException
-        // ("Missing implementation to handle COMMAND_SET_MEDIA_ITEM(S)") zodra Media3 na
-        // onPlaybackResumption de teruggegeven media-items via setMediaItems() probeert toe
-        // te passen. Die crash breekt de hervattingsflow stilletjes af: het nummer wordt wel
-        // getoond maar er volgt geen play-commando, dus de speler blijft gepauzeerd staan
-        // totdat je zelf op hervatten drukt. We hoeven hier zelf niets te doen: getState()
-        // haalt de daadwerkelijke afspeellijst en positie altijd uit de live serverstatus
-        // (latestStatus/latestPlaylist), niet uit wat hier binnenkomt.
+        // Without this override, SimpleBasePlayer throws an IllegalStateException ("Missing
+        // implementation to handle COMMAND_SET_MEDIA_ITEM(S)") when Media3 tries to apply
+        // the media items returned from onPlaybackResumption via setMediaItems(). That crash
+        // silently breaks the resumption flow: the track is shown but no play command
+        // follows, so the player stays paused until manually resumed. No action needed here:
+        // getState() always pulls the actual playlist and position from the live server
+        // status (latestStatus/latestPlaylist), not from what arrives here.
         override fun handleSetMediaItems(
             mediaItems: List<MediaItem>,
             startIndex: Int,
@@ -1141,17 +1143,17 @@ class MediaService :
         override fun handleSetPlayWhenReady(playWhenReady: Boolean) = future {
             val playerId = currentPlayer
             if (playerId == null) {
-                Log.w(TAG, "handleSetPlayWhenReady($playWhenReady): geen currentPlayer bekend")
+                Log.w(TAG, "handleSetPlayWhenReady($playWhenReady): no currentPlayer known")
                 return@future
             }
-            // Bij een lokale speler die nog aan het (her)verbinden is met de server (bv. vlak na
-            // een AA-reconnect, waarbij LocalPlaybackService opnieuw moet opstarten) kan een
-            // play-commando te vroeg aankomen: de server ziet de speler dan nog als disconnected
-            // en reageert daar onvoorspelbaar op (in de praktijk: doorspringen naar het volgende
-            // nummer en meteen weer stoppen, in plaats van het huidige nummer te hervatten).
-            // Daarom hier kort wachten tot de speler weer verbonden is voordat we play sturen.
+            // For a local player that's still (re)connecting to the server (e.g. right after
+            // an AA reconnect, where LocalPlaybackService has to restart), a play command can
+            // arrive too early: the server still sees the player as disconnected and reacts
+            // unpredictably (in practice: skipping to the next track and immediately
+            // stopping, instead of resuming the current track). So wait briefly here until
+            // the player is reconnected before sending play.
             if (playWhenReady && playerId in localPlayerIds && latestStatus?.connected != true) {
-                Log.d(TAG, "handleSetPlayWhenReady($playWhenReady): wachten tot $playerId weer verbonden is")
+                Log.d(TAG, "handleSetPlayWhenReady($playWhenReady): waiting for $playerId to reconnect")
                 val reconnected = withTimeoutOrNull(LOCAL_PLAYER_RECONNECT_TIMEOUT_MS) {
                     while (latestStatus?.connected != true) {
                         delay(100)
@@ -1161,9 +1163,9 @@ class MediaService :
                 if (reconnected == null) {
                     Log.w(
                         TAG,
-                        "handleSetPlayWhenReady($playWhenReady): timeout, $playerId nog steeds " +
-                            "niet verbonden na ${LOCAL_PLAYER_RECONNECT_TIMEOUT_MS}ms - " +
-                            "commando toch maar versturen"
+                        "handleSetPlayWhenReady($playWhenReady): timeout, $playerId still " +
+                            "not connected after ${LOCAL_PLAYER_RECONNECT_TIMEOUT_MS}ms - " +
+                            "sending command anyway"
                     )
                 }
             }
@@ -1171,17 +1173,17 @@ class MediaService :
                 playWhenReady -> PlayerStatus.PlayState.Playing
                 else -> PlayerStatus.PlayState.Paused
             }
-            Log.d(TAG, "handleSetPlayWhenReady($playWhenReady): commando $newState naar $playerId")
+            Log.d(TAG, "handleSetPlayWhenReady($playWhenReady): command $newState to $playerId")
             try {
                 connectionHelper.changePlaybackState(playerId, newState)
-                Log.d(TAG, "handleSetPlayWhenReady($playWhenReady): commando naar $playerId verstuurd")
+                Log.d(TAG, "handleSetPlayWhenReady($playWhenReady): command sent to $playerId")
             } catch (e: Exception) {
-                Log.w(TAG, "handleSetPlayWhenReady($playWhenReady): commando naar $playerId mislukt", e)
+                Log.w(TAG, "handleSetPlayWhenReady($playWhenReady): command to $playerId failed", e)
                 return@future
             }
-            // Bewaarde positie (zie pendingResumePositionMs) alsnog terugzetten na een
-            // geslaagd play-commando, zodat hervatten na een AA-disconnect/reconnect niet
-            // steeds weer bij het begin van het nummer begint.
+            // Restore the saved position (see pendingResumePositionMs) after a successful
+            // play command, so resuming after an AA disconnect/reconnect doesn't always
+            // start at the beginning of the track.
             if (playWhenReady) {
                 pendingResumePositionMs?.let { positionMs ->
                     pendingResumePositionMs = null
@@ -1191,14 +1193,14 @@ class MediaService :
                             connectionHelper.updatePlaybackPosition(playerId, positionSeconds)
                             Log.d(
                                 TAG,
-                                "handleSetPlayWhenReady($playWhenReady): positie $playerId " +
-                                    "teruggezet naar ${positionSeconds}s"
+                                "handleSetPlayWhenReady($playWhenReady): position $playerId " +
+                                    "restored to ${positionSeconds}s"
                             )
                         } catch (e: Exception) {
                             Log.w(
                                 TAG,
-                                "handleSetPlayWhenReady($playWhenReady): positie $playerId " +
-                                    "terugzetten mislukt",
+                                "handleSetPlayWhenReady($playWhenReady): position $playerId " +
+                                    "restore failed",
                                 e
                             )
                         }
@@ -1245,11 +1247,11 @@ class MediaService :
             val currentSong = status?.playlist?.nowPlaying
                 ?: return State.Builder()
                     .setPlaybackState(STATE_IDLE)
-                    // Zonder dit blijft availableCommands leeg zodra er niets speelt (lege
-                    // playlist): Media3 weigert dan zowel play() als playFromMediaId (routeert
-                    // niet door naar onSetMediaItems) omdat de speler claimt geen enkel
-                    // commando te ondersteunen - AA toont dan "Kan je selectie niet laden" en
-                    // een favoriet selecteren werkt domweg niet meer.
+                    // Without this, availableCommands stays empty whenever nothing is playing
+                    // (empty playlist): Media3 then refuses both play() and playFromMediaId
+                    // (doesn't route through to onSetMediaItems) because the player claims to
+                    // support no commands at all - AA then shows "Can't load your selection"
+                    // and selecting a favorite simply stops working.
                     .setAvailableCommands(
                         Player.Commands.Builder()
                             .add(COMMAND_PLAY_PAUSE)
