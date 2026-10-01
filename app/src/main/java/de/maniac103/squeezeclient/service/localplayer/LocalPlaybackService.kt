@@ -42,6 +42,8 @@ import androidx.work.NetworkType
 import androidx.work.OneTimeWorkRequestBuilder
 import androidx.work.OutOfQuotaPolicy
 import de.maniac103.squeezeclient.R
+import de.maniac103.squeezeclient.cometd.ConnectionState
+import de.maniac103.squeezeclient.extfuncs.connectionHelper
 import de.maniac103.squeezeclient.extfuncs.getOrCreateNotificationChannel
 import de.maniac103.squeezeclient.extfuncs.localPlayerEnabled
 import de.maniac103.squeezeclient.extfuncs.localPlayerName
@@ -51,6 +53,7 @@ import de.maniac103.squeezeclient.extfuncs.workManager
 import de.maniac103.squeezeclient.service.NotificationIds
 import de.maniac103.squeezeclient.ui.MainActivity
 import de.maniac103.squeezeclient.ui.prefs.SettingsActivity
+import kotlin.math.roundToInt
 import kotlin.time.Duration.Companion.milliseconds
 import kotlin.time.Duration.Companion.seconds
 import kotlin.time.DurationUnit
@@ -103,7 +106,8 @@ class LocalPlaybackService :
             onDecoderLoadFinished = { onDecoderLoadFinished() },
             onDecodingFinished = { onDecodingFinished() },
             onHeadersReceived = { resp -> onHeadersReceived(resp) },
-            onMetadataReceived = { title, artworkUri -> onMetadataReceived(title, artworkUri) }
+            onMetadataReceived = { title, artworkUri -> onMetadataReceived(title, artworkUri) },
+            onExternalDeviceVolumeChange = { volume -> onExternalDeviceVolumeChanged(volume) }
         )
         startupTimestampNanos = System.nanoTime()
     }
@@ -213,6 +217,25 @@ class LocalPlaybackService :
 
     private fun onDecodingFinished() = lifecycleScope.launch {
         sendStatus(SlimprotoSocket.StatusType.DecoderUnderrun)
+    }
+
+    // The device volume changed for a reason other than us applying an LMS-sent value (e.g. the
+    // user used the phone's volume rocker, or another app changed it). Report it back to Lyrion
+    // via the normal "mixer volume" CometD request, the same way the app's own volume UI does for
+    // any other player - this keeps our reported volume in sync in both directions, matching how
+    // e.g. Squeezelite's "synchronized" volume mode behaves.
+    private fun onExternalDeviceVolumeChanged(volume: Float) = lifecycleScope.launch {
+        val localPlayerId = (connectionHelper.state.value as? ConnectionState.Connected)
+            ?.players
+            ?.find { it.model == LOCAL_PLAYER_MODEL }
+            ?.id
+        if (localPlayerId == null) {
+            Log.d(TAG, "External volume change, but local player not found in player list")
+            return@launch
+        }
+        val volumePercent = (volume * 100).roundToInt()
+        Log.d(TAG, "Reporting external volume change to $volumePercent% for $localPlayerId")
+        connectionHelper.setVolume(localPlayerId, volumePercent)
     }
 
     private suspend fun handlePlaybackStart() {
@@ -435,6 +458,11 @@ class LocalPlaybackService :
 
     companion object {
         private const val TAG = "LocalPlaybackService"
+
+        // Matches the "Model=squeezeclient" capability sent in SlimprotoSocket.sendHello() -
+        // used to find this device's own entry in Lyrion's player list (see MediaService's
+        // identically-purposed LOCAL_PLAYER_MODEL constant).
+        private const val LOCAL_PLAYER_MODEL = "squeezeclient"
 
         fun triggerStartOrStop(context: Context) {
             val serviceIntent = Intent(context, LocalPlaybackService::class.java)

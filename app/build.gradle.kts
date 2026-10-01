@@ -71,7 +71,7 @@ android {
     signingConfigs {
         create("release") {
             val props = Properties().apply {
-                val propsFile = File("signing.properties")
+                val propsFile = rootProject.file("signing.properties")
                 if (propsFile.exists()) {
                     load(propsFile.reader())
                 }

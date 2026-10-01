@@ -74,7 +74,11 @@ class LocalPlayer(
     onDecodingFinished: () -> Unit = {},
     onAudioStreamFlushed: () -> Unit = {},
     private val onHeadersReceived: (response: Response) -> Unit = {},
-    private val onMetadataReceived: (title: CharSequence, artworkUri: Uri?) -> Unit = { _, _ -> }
+    private val onMetadataReceived: (title: CharSequence, artworkUri: Uri?) -> Unit = { _, _ -> },
+    // Called when the device (system) volume changes for a reason other than this class's own
+    // applyVolumeAsDeviceVolume()/restore calls - i.e. the user or another app changed it.
+    // Only fires in Device/DeviceWhilePlaying mode. Value is a 0..1 fraction.
+    private val onExternalDeviceVolumeChange: (volume: Float) -> Unit = {}
 ) : Player.Listener {
     private val prefs = context.prefs
     private val dataSourceFactory: HttpDataSource.Factory
@@ -113,6 +117,10 @@ class LocalPlayer(
     private var playerInternalVolume = 1F
     private var currentReplayGain = 1F
     private var lastSavedDeviceVolume: Int? = null
+    // Tracks the device volume step this class itself last requested (via
+    // applyVolumeAsDeviceVolume() or the pause/resume restore), so onDeviceVolumeChanged() can
+    // tell an echo of our own change apart from one made externally (by the user or another app).
+    private var lastAppliedDeviceVolume: Int? = null
 
     @UnstableApi
     private val audioProcessor = LocalPlayerAudioProcessor(
@@ -213,6 +221,8 @@ class LocalPlayer(
         val mediaSource = mediaSourceFactory.createMediaSource(mediaItem)
 
         currentReplayGain = replayGain
+        // TEMP DIAGNOSTIC LOGGING - remove after volume/dynamics investigation
+        Log.d(TAG, "DIAG play(): uri=$uri replayGain=$replayGain (received from server)")
 
         if (player.playbackState == Player.STATE_IDLE) {
             player.setMediaSource(mediaSource)
@@ -274,6 +284,14 @@ class LocalPlayer(
             reason == Player.MEDIA_ITEM_TRANSITION_REASON_PLAYLIST_CHANGED
         ) {
             player.volume = playerInternalVolume * currentReplayGain
+            // TEMP DIAGNOSTIC LOGGING - remove after volume/dynamics investigation
+            Log.d(
+                TAG,
+                "DIAG onMediaItemTransition(): playerInternalVolume=$playerInternalVolume " +
+                    "currentReplayGain=$currentReplayGain -> player.volume=${player.volume} " +
+                    "deviceVolume=${player.deviceVolume}/${player.deviceInfo.maxVolume} " +
+                    "mode=${prefs.localPlayerVolumeMode}"
+            )
         }
         // Tracks are queued as separate media sources (see play()), so a track transition is
         // reported as PLAYLIST_CHANGED rather than AUTO.
@@ -330,6 +348,13 @@ class LocalPlayer(
         val volume = lastSetVolume ?: return
         val isPlaying = readyForPlayback && !paused
         val mode = prefs.localPlayerVolumeMode
+        // TEMP DIAGNOSTIC LOGGING - remove after volume/dynamics investigation
+        Log.d(
+            TAG,
+            "DIAG updatePlayerVolume(): isSetVolume=$isSetVolume volume=$volume " +
+                "isPlaying=$isPlaying mode=$mode currentReplayGain=$currentReplayGain " +
+                "playerInternalVolume=$playerInternalVolume"
+        )
         when {
             isSetVolume && mode == LocalPlayerVolumeMode.PlayerOnly -> {
                 playerInternalVolume = volume
@@ -348,6 +373,7 @@ class LocalPlayer(
             }
 
             !isPlaying && lastSavedDeviceVolume != null -> {
+                lastAppliedDeviceVolume = lastSavedDeviceVolume
                 player.setDeviceVolume(lastSavedDeviceVolume!!, 0)
                 lastSavedDeviceVolume = null
             }
@@ -357,7 +383,42 @@ class LocalPlayer(
     private fun applyVolumeAsDeviceVolume(volume: Float) {
         val maxVolume = player.deviceInfo.maxVolume
         val volumeAsInt = (volume * maxVolume).roundToInt()
+        lastAppliedDeviceVolume = volumeAsInt
         player.setDeviceVolume(volumeAsInt, 0)
+        // TEMP DIAGNOSTIC LOGGING - remove after volume/dynamics investigation
+        Log.d(
+            TAG,
+            "DIAG applyVolumeAsDeviceVolume(): volume=$volume maxVolume=$maxVolume " +
+                "-> deviceVolume=$volumeAsInt (player.volume=${player.volume})"
+        )
+    }
+
+    // Fires for ANY device volume change, including echoes of our own setDeviceVolume() calls
+    // above - lastAppliedDeviceVolume is what lets us tell those apart from an external change.
+    override fun onDeviceVolumeChanged(volume: Int, muted: Boolean) {
+        super.onDeviceVolumeChanged(volume, muted)
+        val mode = prefs.localPlayerVolumeMode
+        val deviceControlsVolume = mode == LocalPlayerVolumeMode.Device ||
+            mode == LocalPlayerVolumeMode.DeviceWhilePlaying
+        if (!deviceControlsVolume) {
+            return
+        }
+        if (volume == lastAppliedDeviceVolume) {
+            return
+        }
+        val maxVolume = player.deviceInfo.maxVolume
+        if (maxVolume <= 0) {
+            return
+        }
+        val volumeFraction = volume.toFloat() / maxVolume
+        lastSetVolume = volumeFraction
+        // TEMP DIAGNOSTIC LOGGING - remove after volume/dynamics investigation
+        Log.d(
+            TAG,
+            "DIAG onDeviceVolumeChanged(): EXTERNAL change to $volume/$maxVolume " +
+                "($volumeFraction), lastAppliedDeviceVolume was $lastAppliedDeviceVolume"
+        )
+        onExternalDeviceVolumeChange(volumeFraction)
     }
 
     @OptIn(UnstableApi::class)

@@ -31,7 +31,9 @@ fun NotificationManagerCompat.getOrCreateNotificationChannel(
     return NotificationChannelCompat.Builder(info.id, info.importance)
         .apply {
             setName(res.getString(info.nameResId))
-            setDescription(res.getString(info.descResId))
+            if (info.descResId != 0) {
+                setDescription(res.getString(info.descResId))
+            }
             setLightsEnabled(false)
             setVibrationEnabled(false)
             setSound(null, null)

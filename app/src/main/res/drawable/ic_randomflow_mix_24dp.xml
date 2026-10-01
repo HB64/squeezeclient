@@ -1,0 +1,35 @@
+<!--
+  ~ This file is part of Squeeze Client, an Android client for the LMS music server.
+  ~ Copyright (c) 2024 Danny Baumann
+  ~
+  ~ This program is free software: you can redistribute it and/or modify it under the terms of the
+  ~ GNU General Public License as published by the Free Software Foundation,
+  ~ either version 3 of the License, or (at your option) any later version.
+  ~
+  ~ This program is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY;
+  ~ without even the implied warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
+  ~ See the GNU General Public License for more details.
+  ~
+  ~ You should have received a copy of the GNU General Public License along with this program.
+  ~ If not, see <http://www.gnu.org/licenses/>.
+  ~
+  -->
+
+<!-- "RF" monogram for the Random Flow start-mix button in the Android Auto Now Playing button
+     row. Same ring badge and glyph frame as ic_sugarcube_mix_24dp. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp"
+    android:height="24dp"
+    android:viewportWidth="24"
+    android:viewportHeight="24">
+  <path
+      android:fillColor="#FF000000"
+      android:fillType="evenOdd"
+      android:pathData="M2,12 A10,10 0 1,0 22,12 A10,10 0 1,0 2,12 Z M3.6,12 A8.4,8.4 0 1,0 20.4,12 A8.4,8.4 0 1,0 3.6,12 Z"/>
+  <group android:scaleX="0.62" android:scaleY="0.62" android:translateX="4.56" android:translateY="4.56">
+    <path
+        android:fillColor="#FF000000"
+        android:fillType="evenOdd"
+        android:pathData="M2.5,6.3 H8 Q11.2,6.3 11.2,9.4 Q11.2,11.8 9.2,12.6 L11.4,17.7 H8.9 L7,13.1 H4.9 V17.7 H2.5 Z M4.9,8.3 V11.1 H7.8 Q8.9,11.1 8.9,9.7 Q8.9,8.3 7.8,8.3 Z M13.5,6.3 H21.5 V8.4 H15.9 V10.9 H20.5 V13 H15.9 V17.7 H13.5 Z"/>
+  </group>
+</vector>

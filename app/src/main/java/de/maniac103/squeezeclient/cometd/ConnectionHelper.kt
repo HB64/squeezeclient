@@ -18,6 +18,7 @@
 package de.maniac103.squeezeclient.cometd
 
 import de.maniac103.squeezeclient.SqueezeClientApplication
+import de.maniac103.squeezeclient.cometd.request.CanRequest
 import de.maniac103.squeezeclient.cometd.request.ChangePlaybackStateRequest
 import de.maniac103.squeezeclient.cometd.request.ClearPlaylistRequest
 import de.maniac103.squeezeclient.cometd.request.ExecuteActionRequest
@@ -366,6 +367,12 @@ class ConnectionHelper(private val appContext: SqueezeClientApplication) {
         doRequestWithResult<JiveHomeItemListResponse>(
             FetchHomeMenuRequest(playerId)
         ).asModelItems(appContext).associateBy { it.id }
+
+    suspend fun hasCommand(playerId: PlayerId, vararg command: String): Boolean {
+        val response = publishOneShotRequest(CanRequest(playerId, *command))
+        return runCatching { response.jsonObject["_can"]?.jsonPrimitive?.content == "1" }
+            .getOrDefault(false)
+    }
 
     private suspend inline fun <reified T> doRequestWithResult(request: Request): T {
         val jsonData = publishOneShotRequest(request)

@@ -31,6 +31,7 @@ import android.util.Log
 import androidx.annotation.OptIn
 import androidx.car.app.connection.CarConnection
 import androidx.core.app.NotificationCompat
+import androidx.core.app.NotificationManagerCompat
 import androidx.core.app.ServiceCompat
 import androidx.core.content.IntentCompat
 import androidx.core.content.edit
@@ -72,6 +73,7 @@ import de.maniac103.squeezeclient.cometd.request.PlaybackButtonRequest
 import de.maniac103.squeezeclient.extfuncs.androidAutoPresetButtonCount
 import de.maniac103.squeezeclient.extfuncs.connectionHelper
 import de.maniac103.squeezeclient.extfuncs.defaultPlayer
+import de.maniac103.squeezeclient.extfuncs.getOrCreateNotificationChannel
 import de.maniac103.squeezeclient.extfuncs.httpClient
 import de.maniac103.squeezeclient.extfuncs.lastSelectedPlayer
 import de.maniac103.squeezeclient.extfuncs.localPlayerEnabled
@@ -93,6 +95,7 @@ import kotlin.time.Clock
 import kotlin.time.Duration.Companion.minutes
 import kotlin.time.DurationUnit
 import kotlin.time.ExperimentalTime
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.Job
@@ -227,6 +230,7 @@ class MediaService :
     private lateinit var player: SqueezeboxPlayer
     private lateinit var mediaSession: MediaLibrarySession
     private lateinit var customLayout: List<CommandButton>
+    private var useRandomFlowMix = false
     private lateinit var artworkCache: AlbumArtworkCache
     private var lastDisconnectionTime = Clock.System.now()
     private var isConnectedToCar = false
@@ -366,18 +370,7 @@ class MediaService :
 
         // Only show the Mix buttons. Preset buttons (Squeezebox-style, like the physical
         // buttons on a Boom) are appended based on the "aa_preset_button_count" setting (0 = off).
-        customLayout = listOf(
-            CommandButton.Builder(CommandButton.ICON_UNDEFINED)
-                .setDisplayName("Start Mix")
-                .setCustomIconResId(R.drawable.ic_sugarcube_mix_24dp)
-                .setSessionCommand(SessionCommand(SESSION_ACTION_START_MIX, bundleOf()))
-                .build(),
-            CommandButton.Builder(CommandButton.ICON_UNDEFINED)
-                .setDisplayName("Random Mix")
-                .setCustomIconResId(R.drawable.ic_shuffle_song_24dp)
-                .setSessionCommand(SessionCommand(SESSION_ACTION_START_RANDOM_MIX, bundleOf()))
-                .build()
-        ) + presetCommandButtons()
+        customLayout = buildCustomLayout()
 
         val activityIntent = PendingIntent.getActivity(
             this,
@@ -473,6 +466,10 @@ class MediaService :
 
     private fun promoteToForegroundImmediately() {
         val channelInfo = NotificationIds.CHANNEL_MEDIA_CONTROL
+        // Unlike the notification Media3 builds via DefaultMediaNotificationProvider, this
+        // placeholder notification is posted directly, so the channel isn't guaranteed to
+        // exist yet - ensure it's created first, or startForeground throws.
+        NotificationManagerCompat.from(this).getOrCreateNotificationChannel(resources, channelInfo)
         val notification = NotificationCompat.Builder(this, channelInfo.id)
             .setSmallIcon(R.drawable.ic_logo_notification_24dp)
             .setContentTitle(getString(R.string.app_name))
@@ -902,16 +899,26 @@ class MediaService :
 
     // Called via the "Start Mix" button on the AA Now Playing screen. Fetches the context
     // menu of the current track (same source as the info button in NowPlayingFragment.kt)
-    // and directly executes the SugarCube "mix from here" action.
+    // and directly executes the SugarCube "mix from here" action. Without SugarCube, falls
+    // back to Random Flow's own "randomflow startmix" command.
     private suspend fun startSugarCubeMix() {
         val playerId = player.currentPlayer ?: return
-        val moreAction = player.currentSongActions?.moreAction ?: return
-        val items = connectionHelper.fetchItemsForAction(playerId, moreAction, PagingParams.All, false)
-        val mixAction = items.items.firstNotNullOfOrNull { item ->
-            val action = item.actions?.doAction ?: item.actions?.goAction
-            action?.takeIf { it.cmd.getOrNull(2)?.startsWith("mixfromhere") == true }
-        } ?: return
-        connectionHelper.fetchItemsForAction(playerId, mixAction, PagingParams.All, false)
+        val moreAction = player.currentSongActions?.moreAction
+        val mixAction = moreAction?.let { action ->
+            connectionHelper.fetchItemsForAction(playerId, action, PagingParams.All, false)
+                .items.firstNotNullOfOrNull { item ->
+                    val itemAction = item.actions?.doAction ?: item.actions?.goAction
+                    itemAction?.takeIf { it.cmd.getOrNull(2)?.startsWith("mixfromhere") == true }
+                }
+        }
+        if (mixAction != null) {
+            connectionHelper.fetchItemsForAction(playerId, mixAction, PagingParams.All, false)
+        } else {
+            connectionHelper.executeAction(
+                playerId,
+                JiveAction(listOf("randomflow", "startmix"), emptyMap(), null, null)
+            )
+        }
     }
 
     // Called via the "Random Mix" button on the AA Now Playing screen. This is Lyrion's own,
@@ -932,6 +939,45 @@ class MediaService :
         }
         val action = trackMixEntry?.goAction ?: trackMixEntry?.doAction ?: return
         connectionHelper.fetchItemsForAction(playerId, action, PagingParams.All, false)
+    }
+
+    // The first button starts a mix with SugarCube, or with Random Flow when the server has
+    // that plugin (the two plugins are mutually exclusive).
+    private fun buildCustomLayout(): List<CommandButton> = listOf(
+        CommandButton.Builder(CommandButton.ICON_UNDEFINED)
+            .setDisplayName(if (useRandomFlowMix) "Random Flow" else "Start Mix")
+            .setCustomIconResId(
+                if (useRandomFlowMix) {
+                    R.drawable.ic_randomflow_mix_24dp
+                } else {
+                    R.drawable.ic_sugarcube_mix_24dp
+                }
+            )
+            .setSessionCommand(SessionCommand(SESSION_ACTION_START_MIX, bundleOf()))
+            .build(),
+        CommandButton.Builder(CommandButton.ICON_UNDEFINED)
+            .setDisplayName("Random Mix")
+            .setCustomIconResId(R.drawable.ic_shuffle_song_24dp)
+            .setSessionCommand(SessionCommand(SESSION_ACTION_START_RANDOM_MIX, bundleOf()))
+            .build()
+    ) + presetCommandButtons()
+
+    // Checks whether the server has Random Flow and updates the first AA button accordingly.
+    private suspend fun updateMixButton(playerId: PlayerId) {
+        val randomFlow = try {
+            connectionHelper.hasCommand(playerId, "randomflow", "startmix")
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            Log.w(TAG, "Mix plugin detection failed", e)
+            return
+        }
+        if (randomFlow == useRandomFlowMix) return
+        useRandomFlowMix = randomFlow
+        if (::mediaSession.isInitialized) {
+            customLayout = buildCustomLayout()
+            mediaSession.setMediaButtonPreferences(customLayout)
+        }
     }
 
     // Builds the row of preset buttons (Squeezebox-style: preset_1.single through
@@ -987,6 +1033,9 @@ class MediaService :
                 // current player is gone
                 stopSelf()
             }
+        }
+        (player.currentPlayer ?: status.players.firstOrNull()?.id)?.let { playerId ->
+            lifecycleScope.launch { updateMixButton(playerId) }
         }
     }
 
