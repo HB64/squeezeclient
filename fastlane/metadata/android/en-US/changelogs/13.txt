@@ -1,0 +1,6 @@
+- Android Auto: the first mix button now shows "RF" and starts Random Flow
+  when the server has that plugin; otherwise it stays the SugarCube
+  "Start Mix" button
+- Volume changes made outside the app (e.g. the phone's volume buttons) are
+  now synced back to the server
+- Fix crash when opening settings (foreground service notification)
