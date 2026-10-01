@@ -1,3 +1,5 @@
+- Integration with the Random Flow LMS plugin: its settings show up under
+  Settings, and "Start RandomFlow Mix" is available in a track's info menu
 - Android Auto: the first mix button now shows "RF" and starts Random Flow
   when the server has that plugin; otherwise it stays the SugarCube
   "Start Mix" button
