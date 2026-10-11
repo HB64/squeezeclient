@@ -20,3 +20,4 @@ signing.properties
 .idea/
 claude-session-status.md
 *.jks
+app/foss/
