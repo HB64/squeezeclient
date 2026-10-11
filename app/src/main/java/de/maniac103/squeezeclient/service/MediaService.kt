@@ -230,7 +230,7 @@ class MediaService :
     private lateinit var player: SqueezeboxPlayer
     private lateinit var mediaSession: MediaLibrarySession
     private lateinit var customLayout: List<CommandButton>
-    private var useRandomFlowMix = false
+    private var mixMode = MixMode.Random
     private lateinit var artworkCache: AlbumArtworkCache
     private var lastDisconnectionTime = Clock.System.now()
     private var isConnectedToCar = false
@@ -276,6 +276,9 @@ class MediaService :
             }
         }
         player = SqueezeboxPlayer(applicationContext, connectionHelper, lifecycle, artworkCache)
+        player.onTrackChanged = {
+            player.currentPlayer?.let { id -> lifecycleScope.launch { updateMixButton(id) } }
+        }
 
         val channelInfo = NotificationIds.CHANNEL_MEDIA_CONTROL
         setMediaNotificationProvider(
@@ -582,7 +585,7 @@ class MediaService :
             }
 
             SESSION_ACTION_START_MIX -> {
-                startSugarCubeMix()
+                startMix()
                 SessionResult.RESULT_SUCCESS
             }
 
@@ -897,33 +900,37 @@ class MediaService :
         MediaSession.MediaItemsWithStartPosition(mediaItems, startIndex, startPositionMs)
     }
 
-    // Called via the "Start Mix" button on the AA Now Playing screen. Fetches the context
-    // menu of the current track (same source as the info button in NowPlayingFragment.kt)
-    // and directly executes the SugarCube "mix from here" action. Without SugarCube, falls
-    // back to Random Flow's own "randomflow startmix" command.
-    private suspend fun startSugarCubeMix() {
+    // Called via the first button on the AA Now Playing screen. Starts a mix with whichever of
+    // SugarCube / Random Flow is active for this player right now, or Lyrion's random mix if
+    // neither is. SugarCube uses the "mix from here" action of the current track's context menu.
+    private suspend fun startMix() {
         val playerId = player.currentPlayer ?: return
-        val moreAction = player.currentSongActions?.moreAction
-        val mixAction = moreAction?.let { action ->
-            connectionHelper.fetchItemsForAction(playerId, action, PagingParams.All, false)
-                .items.firstNotNullOfOrNull { item ->
-                    val itemAction = item.actions?.doAction ?: item.actions?.goAction
-                    itemAction?.takeIf { it.cmd.getOrNull(2)?.startsWith("mixfromhere") == true }
-                }
-        }
-        if (mixAction != null) {
-            connectionHelper.fetchItemsForAction(playerId, mixAction, PagingParams.All, false)
-        } else {
-            connectionHelper.executeAction(
+        when (resolveMixMode(playerId) ?: mixMode) {
+            MixMode.Random -> startRandomTrackMix()
+            MixMode.RandomFlow -> connectionHelper.executeAction(
                 playerId,
                 JiveAction(listOf("randomflow", "startmix"), emptyMap(), null, null)
             )
+            MixMode.SugarCube -> {
+                val mixAction = player.currentSongActions?.moreAction?.let { action ->
+                    connectionHelper.fetchItemsForAction(playerId, action, PagingParams.All, false)
+                        .items.firstNotNullOfOrNull { item ->
+                            val itemAction = item.actions?.doAction ?: item.actions?.goAction
+                            itemAction?.takeIf {
+                                it.cmd.getOrNull(2)?.startsWith("mixfromhere") == true
+                            }
+                        }
+                }
+                if (mixAction != null) {
+                    connectionHelper.fetchItemsForAction(playerId, mixAction, PagingParams.All, false)
+                }
+            }
         }
     }
 
     // Called via the "Random Mix" button on the AA Now Playing screen. This is Lyrion's own,
     // built-in Random Mix plugin (separate from SugarCube) - the most basic way to play
-    // randomly through the whole library. Same approach as startSugarCubeMix(): look up the
+    // randomly through the whole library. Same approach as startMix(): look up the
     // homemenu item first, then find the "Track Mix" option in the submenu it opens (cmd
     // ["randomplay","tracks"]) and execute it directly.
     private suspend fun startRandomTrackMix() {
@@ -941,39 +948,64 @@ class MediaService :
         connectionHelper.fetchItemsForAction(playerId, action, PagingParams.All, false)
     }
 
-    // The first button starts a mix with SugarCube, or with Random Flow when the server has
-    // that plugin (the two plugins are mutually exclusive).
-    private fun buildCustomLayout(): List<CommandButton> = listOf(
-        CommandButton.Builder(CommandButton.ICON_UNDEFINED)
-            .setDisplayName(if (useRandomFlowMix) "Random Flow" else "Start Mix")
+    private enum class MixMode { SugarCube, RandomFlow, Random }
+
+    // The first button starts a mix with the plugin that is active for the current player
+    // (see resolveMixMode). Without an active plugin it is the random mix button, and the
+    // separate second button is dropped so there are no duplicates.
+    private fun buildCustomLayout(): List<CommandButton> {
+        val mixButton = CommandButton.Builder(CommandButton.ICON_UNDEFINED)
+            .setDisplayName(
+                when (mixMode) {
+                    MixMode.SugarCube -> "Start Mix"
+                    MixMode.RandomFlow -> "Random Flow"
+                    MixMode.Random -> "Random Mix"
+                }
+            )
             .setCustomIconResId(
-                if (useRandomFlowMix) {
-                    R.drawable.ic_randomflow_mix_24dp
-                } else {
-                    R.drawable.ic_sugarcube_mix_24dp
+                when (mixMode) {
+                    MixMode.SugarCube -> R.drawable.ic_sugarcube_mix_24dp
+                    MixMode.RandomFlow -> R.drawable.ic_randomflow_mix_24dp
+                    MixMode.Random -> R.drawable.ic_shuffle_song_24dp
                 }
             )
             .setSessionCommand(SessionCommand(SESSION_ACTION_START_MIX, bundleOf()))
-            .build(),
-        CommandButton.Builder(CommandButton.ICON_UNDEFINED)
+            .build()
+        val randomButton = CommandButton.Builder(CommandButton.ICON_UNDEFINED)
             .setDisplayName("Random Mix")
             .setCustomIconResId(R.drawable.ic_shuffle_song_24dp)
             .setSessionCommand(SessionCommand(SESSION_ACTION_START_RANDOM_MIX, bundleOf()))
             .build()
-    ) + presetCommandButtons()
-
-    // Checks whether the server has Random Flow and updates the first AA button accordingly.
-    private suspend fun updateMixButton(playerId: PlayerId) {
-        val randomFlow = try {
-            connectionHelper.hasCommand(playerId, "randomflow", "startmix")
-        } catch (e: CancellationException) {
-            throw e
-        } catch (e: Exception) {
-            Log.w(TAG, "Mix plugin detection failed", e)
-            return
+        val mixButtons = if (mixMode == MixMode.Random) {
+            listOf(mixButton)
+        } else {
+            listOf(mixButton, randomButton)
         }
-        if (randomFlow == useRandomFlowMix) return
-        useRandomFlowMix = randomFlow
+        return mixButtons + presetCommandButtons()
+    }
+
+    // Decides which mix the first button stands for on this player: SugarCube when installed
+    // and enabled for the player, Random Flow when installed and running, otherwise Lyrion's
+    // random mix. Returns null if the server can't be asked.
+    private suspend fun resolveMixMode(playerId: PlayerId): MixMode? = try {
+        when {
+            connectionHelper.hasCommand(playerId, "sugarcube", "menu") &&
+                connectionHelper.isSugarCubeActive(playerId) -> MixMode.SugarCube
+            connectionHelper.hasCommand(playerId, "randomflow", "startmix") &&
+                connectionHelper.isRandomFlowActive(playerId) -> MixMode.RandomFlow
+            else -> MixMode.Random
+        }
+    } catch (e: CancellationException) {
+        throw e
+    } catch (e: Exception) {
+        Log.w(TAG, "Mix plugin detection failed", e)
+        null
+    }
+
+    private suspend fun updateMixButton(playerId: PlayerId) {
+        val newMode = resolveMixMode(playerId) ?: return
+        if (newMode == mixMode) return
+        mixMode = newMode
         if (::mediaSession.isInitialized) {
             customLayout = buildCustomLayout()
             mediaSession.setMediaButtonPreferences(customLayout)
@@ -1148,6 +1180,7 @@ class MediaService :
                 }
             }
         private var latestStatus: PlayerStatus? = null
+        var onTrackChanged: (() -> Unit)? = null
         val currentSongActions get() = latestStatus?.playlist?.nowPlaying?.actions
         private var latestPlaylist: Playlist? = null
         private var statusSubscription: Job? = null
@@ -1414,8 +1447,13 @@ class MediaService :
                                     PagingParams.All
                                 )
                             }
+                            val trackChanged = latestStatus?.playlist?.let {
+                                it.currentPosition != status.playlist.currentPosition ||
+                                    it.nowPlaying?.title != status.playlist.nowPlaying?.title
+                            } ?: true
                             latestStatus = status
                             invalidateState()
+                            if (trackChanged) onTrackChanged?.invoke()
                         }
                 }
             }

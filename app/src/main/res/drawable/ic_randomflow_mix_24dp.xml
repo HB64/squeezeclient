@@ -15,8 +15,7 @@
   ~
   -->
 
-<!-- "RF" monogram for the Random Flow start-mix button in the Android Auto Now Playing button
-     row. Same ring badge and glyph frame as ic_sugarcube_mix_24dp. -->
+<!-- Random Flow logo in the ring badge shared by the Android Auto Now Playing buttons. -->
 <vector xmlns:android="http://schemas.android.com/apk/res/android"
     android:width="24dp"
     android:height="24dp"
@@ -26,10 +25,29 @@
       android:fillColor="#FF000000"
       android:fillType="evenOdd"
       android:pathData="M2,12 A10,10 0 1,0 22,12 A10,10 0 1,0 2,12 Z M3.6,12 A8.4,8.4 0 1,0 20.4,12 A8.4,8.4 0 1,0 3.6,12 Z"/>
-  <group android:scaleX="0.62" android:scaleY="0.62" android:translateX="4.56" android:translateY="4.56">
-    <path
-        android:fillColor="#FF000000"
-        android:fillType="evenOdd"
-        android:pathData="M2.5,6.3 H8 Q11.2,6.3 11.2,9.4 Q11.2,11.8 9.2,12.6 L11.4,17.7 H8.9 L7,13.1 H4.9 V17.7 H2.5 Z M4.9,8.3 V11.1 H7.8 Q8.9,11.1 8.9,9.7 Q8.9,8.3 7.8,8.3 Z M13.5,6.3 H21.5 V8.4 H15.9 V10.9 H20.5 V13 H15.9 V17.7 H13.5 Z"/>
+  <group android:scaleX="0.58" android:scaleY="0.58" android:translateX="4.29" android:translateY="5.16">
+    <group
+        android:scaleX="0.07067"
+        android:scaleY="0.07067"
+        android:translateX="-5.104"
+        android:translateY="-4.784">
+      <path
+          android:strokeColor="#FF000000"
+          android:strokeWidth="28"
+          android:strokeLineCap="round"
+          android:pathData="M154,110 L366,110 M330,204 L366,204 M330,276 L366,276 M330,348 L366,348"/>
+      <path
+          android:strokeColor="#FF000000"
+          android:strokeWidth="28"
+          android:strokeLineCap="round"
+          android:strokeLineJoin="round"
+          android:pathData="M118,204 C190,204 186,348 246,348 M118,348 C190,348 186,204 246,204"/>
+      <path
+          android:fillColor="#FF000000"
+          android:strokeColor="#FF000000"
+          android:strokeWidth="10"
+          android:strokeLineJoin="round"
+          android:pathData="M246,178 L298,204 L246,230 Z M246,322 L298,348 L246,374 Z"/>
+    </group>
   </group>
 </vector>

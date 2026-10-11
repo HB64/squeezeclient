@@ -112,6 +112,8 @@ class JiveHomeItemListAdapter(items: List<JiveHomeMenuItem> = listOf()) :
             "opmlselectRemoteLibrary" to R.drawable.hm_remotelibrary,
             "opmlselectVirtualLibrary" to R.drawable.hm_virtuallibrary,
             "playerpower" to R.drawable.hm_playerpower,
+            "pluginFoobarActivateSomething" to R.drawable.hm_sugarcube,
+            "pluginRandomFlowSettings" to R.drawable.hm_randomflow,
             "radios" to R.drawable.hm_radios,
             "randomplay" to R.drawable.hm_randomplay,
             "settings" to R.drawable.hm_settings,

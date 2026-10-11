@@ -33,8 +33,10 @@ import de.maniac103.squeezeclient.cometd.request.MenuStatusRequest
 import de.maniac103.squeezeclient.cometd.request.MovePlaylistItemRequest
 import de.maniac103.squeezeclient.cometd.request.PlaybackButtonRequest
 import de.maniac103.squeezeclient.cometd.request.PlayerPowerRequest
+import de.maniac103.squeezeclient.cometd.request.PlayerPrefRequest
 import de.maniac103.squeezeclient.cometd.request.PlayerStatusRequest
 import de.maniac103.squeezeclient.cometd.request.RadioSearchRequest
+import de.maniac103.squeezeclient.cometd.request.RandomFlowMixSettingsRequest
 import de.maniac103.squeezeclient.cometd.request.RemovePlaylistItemRequest
 import de.maniac103.squeezeclient.cometd.request.Request
 import de.maniac103.squeezeclient.cometd.request.SavePlaylistRequest
@@ -371,6 +373,20 @@ class ConnectionHelper(private val appContext: SqueezeClientApplication) {
     suspend fun hasCommand(playerId: PlayerId, vararg command: String): Boolean {
         val response = publishOneShotRequest(CanRequest(playerId, *command))
         return runCatching { response.jsonObject["_can"]?.jsonPrimitive?.content == "1" }
+            .getOrDefault(false)
+    }
+
+    suspend fun isSugarCubeActive(playerId: PlayerId): Boolean {
+        val response = publishOneShotRequest(
+            PlayerPrefRequest(playerId, "plugin.SugarCube:sugarcube_status")
+        )
+        return runCatching { response.jsonObject["_p2"]?.jsonPrimitive?.content == "1" }
+            .getOrDefault(false)
+    }
+
+    suspend fun isRandomFlowActive(playerId: PlayerId): Boolean {
+        val response = publishOneShotRequest(RandomFlowMixSettingsRequest(playerId))
+        return runCatching { response.jsonObject["mixRunning"]?.jsonPrimitive?.content == "1" }
             .getOrDefault(false)
     }
 
