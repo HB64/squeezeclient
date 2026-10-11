@@ -199,6 +199,9 @@ class LocalPlaybackService :
         sentBufferReady = false
         if (streamEnded) {
             sendStatus(SlimprotoSocket.StatusType.DecoderUnderrun)
+            // Output has fully drained: report STMu (like Squeezelite) so Lyrion marks the
+            // player as stopped and can hand over to e.g. Don't Stop The Music.
+            sendStatus(SlimprotoSocket.StatusType.AudioUnderrun)
         }
     }
 
