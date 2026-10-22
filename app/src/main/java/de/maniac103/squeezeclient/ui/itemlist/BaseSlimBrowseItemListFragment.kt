@@ -156,6 +156,11 @@ abstract class BaseSlimBrowseItemListFragment :
                 listener.onHandleDoOrGoAction(actions.goAction, true, item, null)
             }
 
+            // Plain action items that only define a "do" action (e.g. plugin settings buttons)
+            actions.doAction != null -> {
+                listener.onHandleDoOrGoAction(actions.doAction, false, item, null)
+            }
+
             else -> null
         }
     }
