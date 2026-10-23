@@ -649,7 +649,12 @@ class MediaService :
             ?: return@future LibraryResult.ofItemList(ImmutableList.of(), params)
 
         val items = when {
-            parentId == NODE_ROOT -> listOf(favoritesRootItem())
+            parentId == NODE_ROOT -> listOf(favoritesRootItem(), pluginsRootItem())
+            parentId == NODE_PLUGINS -> fetchPluginChildren(playerId)
+            parentId.startsWith(PLUGIN_PREFIX) -> {
+                selectMixPlugin(playerId, parentId)
+                listOf(pluginConfirmItem(parentId))
+            }
             parentId == NODE_SUGGESTED -> fetchSuggestedChildren(playerId)
             parentId == NODE_FAVORITES -> fetchFavoriteChildren(playerId)
             parentId.startsWith(FAVORITE_PREFIX) -> fetchFavoriteActionChildren(playerId, parentId)
@@ -674,6 +679,10 @@ class MediaService :
         val item = when {
             mediaId == NODE_SUGGESTED -> suggestedRootItem()
             mediaId == NODE_FAVORITES -> favoritesRootItem()
+            mediaId == NODE_PLUGINS -> pluginsRootItem()
+            mediaId.startsWith(PLUGIN_PREFIX) ->
+                runCatching { pluginItem(MixMode.valueOf(mediaId.removePrefix(PLUGIN_PREFIX)), false) }
+                    .getOrNull()
             mediaId.startsWith(FAVORITE_PREFIX) ->
                 favoriteItemCache[mediaId]?.toBrowsableMediaItem(mediaId)
             else -> favoriteActionCache[mediaId]?.let {
@@ -690,6 +699,94 @@ class MediaService :
         }
         item?.let { LibraryResult.ofItem(it, null) }
             ?: LibraryResult.ofError(SessionError.ERROR_BAD_VALUE)
+    }
+
+    private fun pluginsRootItem(): MediaItem = MediaItem.Builder()
+        .setMediaId(NODE_PLUGINS)
+        .setMediaMetadata(
+            MediaMetadata.Builder()
+                .setIsBrowsable(true)
+                .setIsPlayable(false)
+                .setTitle("Mix plugin")
+                .build()
+        )
+        .build()
+
+    private fun pluginItem(mode: MixMode, active: Boolean): MediaItem = MediaItem.Builder()
+        .setMediaId("$PLUGIN_PREFIX${mode.name}")
+        .setMediaMetadata(
+            MediaMetadata.Builder()
+                .setTitle(
+                    when (mode) {
+                        MixMode.SugarCube -> "SugarCube"
+                        MixMode.RandomFlow -> "Random Flow"
+                        MixMode.Mipster -> "MIPster"
+                        MixMode.Random -> "Random Mix"
+                    }
+                )
+                .setSubtitle(if (active) "Active" else null)
+                .setIsBrowsable(true)
+                .setIsPlayable(false)
+                .build()
+        )
+        .build()
+
+    // Shown inside the plugin folder after choosing: AA needs some content there
+    private fun pluginConfirmItem(mediaId: String): MediaItem {
+        val name = runCatching { MixMode.valueOf(mediaId.removePrefix(PLUGIN_PREFIX)) }
+            .getOrNull()
+            ?.let { pluginItem(it, false).mediaMetadata.title }
+        return MediaItem.Builder()
+            .setMediaId("${mediaId}_done")
+            .setMediaMetadata(
+                MediaMetadata.Builder()
+                    .setTitle("Active: $name")
+                    .setIsBrowsable(false)
+                    .setIsPlayable(false)
+                    .build()
+            )
+            .build()
+    }
+
+    private suspend fun isPluginAvailable(playerId: PlayerId, mode: MixMode) = when (mode) {
+        MixMode.SugarCube -> connectionHelper.hasCommand(playerId, "sugarcube", "menu")
+        MixMode.RandomFlow -> connectionHelper.hasCommand(playerId, "randomflow", "startmix")
+        MixMode.Mipster -> connectionHelper.hasCommand(playerId, "mipster", "menu")
+        MixMode.Random -> true
+    }
+
+    private suspend fun fetchPluginChildren(playerId: PlayerId): List<MediaItem> {
+        val active = resolveMixMode(playerId) ?: mixMode
+        return MixMode.entries
+            .filter { isPluginAvailable(playerId, it) }
+            .map { pluginItem(it, it == active) }
+    }
+
+    // Makes the chosen plugin the active one and switches the others off. Never starts a mix
+    // or touches playback. "Random Mix" switches all plugins off.
+    private suspend fun selectMixPlugin(playerId: PlayerId, mediaId: String) {
+        val chosen = runCatching { MixMode.valueOf(mediaId.removePrefix(PLUGIN_PREFIX)) }
+            .getOrNull() ?: return
+        try {
+            for (mode in MixMode.entries) {
+                if (mode == MixMode.Random || !isPluginAvailable(playerId, mode)) continue
+                val on = if (mode == chosen) "1" else "0"
+                val cmd = when (mode) {
+                    MixMode.SugarCube -> listOf("sugarcube", "setting", "sugarcube_status:$on")
+                    MixMode.RandomFlow -> listOf("randomflow", "setautomix", on)
+                    else -> listOf("mipster", "setting", "chainStatus:$on")
+                }
+                connectionHelper.executeAction(playerId, JiveAction(cmd, emptyMap(), null, null))
+            }
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            Log.w(TAG, "Choosing mix plugin failed", e)
+        }
+        updateMixButton(playerId)
+        if (::mediaSession.isInitialized) {
+            mediaSession.notifyChildrenChanged(NODE_PLUGINS, Int.MAX_VALUE, null)
+        }
     }
 
     private fun favoritesRootItem(): MediaItem = MediaItem.Builder()
@@ -1109,6 +1206,8 @@ class MediaService :
         private const val NODE_ROOT = "root"
         private const val NODE_FAVORITES = "favorites"
         private const val NODE_SUGGESTED = "suggested"
+        private const val NODE_PLUGINS = "plugins"
+        private const val PLUGIN_PREFIX = "plugin_"
         private const val FAVORITE_PREFIX = "fav_"
         // Google's own guideline for AA recommendations: offer around 10 items.
         private const val MAX_SUGGESTED_ITEMS = 10
