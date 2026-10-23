@@ -105,6 +105,10 @@ val SharedPreferences.localPlayerVolumeMode: LocalPlayerVolumeMode get() {
         ?: throw IllegalStateException("Local player volume mode value $value has no mapping")
 }
 
+// Attenuation in dB (0 = off) applied to direct internet streams on the local player
+val SharedPreferences.localPlayerStreamAttenuationDb: Int get() =
+    getString("local_player_stream_attenuation", "0")?.toIntOrNull() ?: 0
+
 fun SharedPreferences.Editor.putServerConfig(config: ServerConfiguration) {
     putString("server_url", config.hostnameAndPort)
     putString("server_name", config.name)

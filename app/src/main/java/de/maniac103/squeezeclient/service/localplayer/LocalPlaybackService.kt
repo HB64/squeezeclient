@@ -391,7 +391,8 @@ class LocalPlaybackService :
                     // In direct streaming case we need to wait for the
                     // continue packet before starting playback
                     command.autoStart && !command.directStreaming,
-                    command.pcmParams
+                    command.pcmParams,
+                    command.directStreaming
                 )
             }
 

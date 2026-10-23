@@ -52,10 +52,12 @@ import androidx.media3.extractor.DefaultExtractorsFactory
 import de.maniac103.squeezeclient.BuildConfig
 import de.maniac103.squeezeclient.extfuncs.LocalPlayerVolumeMode
 import de.maniac103.squeezeclient.extfuncs.httpClient
+import de.maniac103.squeezeclient.extfuncs.localPlayerStreamAttenuationDb
 import de.maniac103.squeezeclient.extfuncs.localPlayerVolumeMode
 import de.maniac103.squeezeclient.extfuncs.prefs
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
+import kotlin.math.pow
 import kotlin.math.roundToInt
 import kotlin.time.Duration
 import kotlin.time.Duration.Companion.seconds
@@ -183,7 +185,8 @@ class LocalPlayer(
         headers: Map<String, String>,
         replayGain: Float,
         autoStart: Boolean,
-        pcmParams: SlimprotoSocket.CommandPacket.PcmStreamParams? = null
+        pcmParams: SlimprotoSocket.CommandPacket.PcmStreamParams? = null,
+        directStreaming: Boolean = false
     ) {
         // Raw PCM has no container/header; wrap it in a minimal WAV header so ExoPlayer's
         // WavExtractor recognizes it. Big-endian (AIFF-style) PCM is not supported here.
@@ -220,7 +223,14 @@ class LocalPlayer(
         )
         val mediaSource = mediaSourceFactory.createMediaSource(mediaItem)
 
-        currentReplayGain = replayGain
+        // Direct streams come without replay gain and play louder than own music, so they
+        // can be attenuated by a user-set amount (0 dB = off)
+        val streamFactor = if (directStreaming) {
+            10F.pow(-prefs.localPlayerStreamAttenuationDb / 20F)
+        } else {
+            1F
+        }
+        currentReplayGain = replayGain * streamFactor
         // TEMP DIAGNOSTIC LOGGING - remove after volume/dynamics investigation
         Log.d(TAG, "DIAG play(): uri=$uri replayGain=$replayGain (received from server)")
 

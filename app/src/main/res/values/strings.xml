@@ -130,6 +130,7 @@
     <string name="settings_local_player_enabled_title">Use device as player</string>
     <string name="settings_local_player_enabled_summary">Enable playback on this device by advertising it as player towards the server</string>
     <string name="settings_local_player_volume_mode_title">Volume control mode</string>
+    <string name="settings_local_player_stream_attenuation_title" translatable="false">Stream attenuation</string>
     <string name="settings_volume_buttons_title">Volume control</string>
     <string name="settings_volume_buttons_summary">Use device volume buttons to control player volume</string>
     <string name="settings_volume_step_size_title">Volume step size</string>

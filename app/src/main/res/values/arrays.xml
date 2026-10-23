@@ -54,4 +54,20 @@
         <item>@string/settings_local_player_volume_mode_summary_device</item>
         <item>@string/settings_local_player_volume_mode_summary_device_while_playing</item>
     </string-array>
+
+    <string-array name="settings_local_player_stream_attenuation_values" translatable="false">
+        <item>0</item>
+        <item>3</item>
+        <item>6</item>
+        <item>9</item>
+        <item>12</item>
+    </string-array>
+
+    <string-array name="settings_local_player_stream_attenuation_entries" translatable="false">
+        <item>Off (0 dB)</item>
+        <item>-3 dB</item>
+        <item>-6 dB</item>
+        <item>-9 dB</item>
+        <item>-12 dB</item>
+    </string-array>
 </resources>
