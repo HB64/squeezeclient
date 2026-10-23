@@ -911,6 +911,10 @@ class MediaService :
                 playerId,
                 JiveAction(listOf("randomflow", "startmix"), emptyMap(), null, null)
             )
+            MixMode.Mipster -> connectionHelper.executeAction(
+                playerId,
+                JiveAction(listOf("mipster", "setting", "startChain:0"), emptyMap(), null, null)
+            )
             MixMode.SugarCube -> {
                 val mixAction = player.currentSongActions?.moreAction?.let { action ->
                     connectionHelper.fetchItemsForAction(playerId, action, PagingParams.All, false)
@@ -948,7 +952,7 @@ class MediaService :
         connectionHelper.fetchItemsForAction(playerId, action, PagingParams.All, false)
     }
 
-    private enum class MixMode { SugarCube, RandomFlow, Random }
+    private enum class MixMode { SugarCube, RandomFlow, Mipster, Random }
 
     // The first button starts a mix with the plugin that is active for the current player
     // (see resolveMixMode). Without an active plugin it is the random mix button, and the
@@ -959,6 +963,7 @@ class MediaService :
                 when (mixMode) {
                     MixMode.SugarCube -> "Start Mix"
                     MixMode.RandomFlow -> "Random Flow"
+                    MixMode.Mipster -> "MIPster"
                     MixMode.Random -> "Random Mix"
                 }
             )
@@ -966,6 +971,7 @@ class MediaService :
                 when (mixMode) {
                     MixMode.SugarCube -> R.drawable.ic_sugarcube_mix_24dp
                     MixMode.RandomFlow -> R.drawable.ic_randomflow_mix_24dp
+                    MixMode.Mipster -> R.drawable.ic_mipster_mix_24dp
                     MixMode.Random -> R.drawable.ic_shuffle_song_24dp
                 }
             )
@@ -985,7 +991,7 @@ class MediaService :
     }
 
     // Decides which mix the first button stands for on this player: SugarCube when installed
-    // and enabled for the player, Random Flow when installed and running, otherwise Lyrion's
+    // and enabled for the player, Random Flow when running, MIPster when its chain is on, otherwise Lyrion's
     // random mix. Returns null if the server can't be asked.
     private suspend fun resolveMixMode(playerId: PlayerId): MixMode? = try {
         when {
@@ -993,6 +999,8 @@ class MediaService :
                 connectionHelper.isSugarCubeActive(playerId) -> MixMode.SugarCube
             connectionHelper.hasCommand(playerId, "randomflow", "startmix") &&
                 connectionHelper.isRandomFlowActive(playerId) -> MixMode.RandomFlow
+            connectionHelper.hasCommand(playerId, "mipster", "menu") &&
+                connectionHelper.isMipsterActive(playerId) -> MixMode.Mipster
             else -> MixMode.Random
         }
     } catch (e: CancellationException) {

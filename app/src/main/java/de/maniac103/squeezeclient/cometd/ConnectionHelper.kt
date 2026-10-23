@@ -33,6 +33,7 @@ import de.maniac103.squeezeclient.cometd.request.MenuStatusRequest
 import de.maniac103.squeezeclient.cometd.request.MovePlaylistItemRequest
 import de.maniac103.squeezeclient.cometd.request.PlaybackButtonRequest
 import de.maniac103.squeezeclient.cometd.request.PlayerPowerRequest
+import de.maniac103.squeezeclient.cometd.request.MipsterMenuRequest
 import de.maniac103.squeezeclient.cometd.request.PlayerPrefRequest
 import de.maniac103.squeezeclient.cometd.request.PlayerStatusRequest
 import de.maniac103.squeezeclient.cometd.request.RadioSearchRequest
@@ -388,6 +389,23 @@ class ConnectionHelper(private val appContext: SqueezeClientApplication) {
         val response = publishOneShotRequest(RandomFlowMixSettingsRequest(playerId))
         return runCatching { response.jsonObject["mixRunning"]?.jsonPrimitive?.content == "1" }
             .getOrDefault(false)
+    }
+
+    suspend fun isMipsterActive(playerId: PlayerId): Boolean {
+        val response = publishOneShotRequest(MipsterMenuRequest(playerId))
+        return runCatching {
+            response.jsonObject["item_loop"]?.jsonArray?.any { item ->
+                val obj = item.jsonObject
+                val choices = obj["actions"]?.jsonObject?.get("do")?.jsonObject
+                    ?.get("choices")?.jsonArray
+                val isChainChoice = choices?.any { choice ->
+                    choice.jsonObject["cmd"]?.jsonArray?.any {
+                        it.jsonPrimitive.content.startsWith("chainStatus")
+                    } == true
+                } == true
+                isChainChoice && obj["selectedIndex"]?.jsonPrimitive?.content == "2"
+            } == true
+        }.getOrDefault(false)
     }
 
     private suspend inline fun <reified T> doRequestWithResult(request: Request): T {

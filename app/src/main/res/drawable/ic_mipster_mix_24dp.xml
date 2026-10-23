@@ -1,0 +1,33 @@
+<!--
+  ~ This file is part of Squeeze Client, an Android client for the LMS music server.
+  ~ Copyright (c) 2024 Danny Baumann
+  ~
+  ~ This program is free software: you can redistribute it and/or modify it under the terms of the
+  ~ GNU General Public License as published by the Free Software Foundation,
+  ~ either version 3 of the License, or (at your option) any later version.
+  ~
+  ~ This program is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY;
+  ~ without even the implied warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
+  ~ See the GNU General Public License for more details.
+  ~
+  ~ You should have received a copy of the GNU General Public License along with this program.
+  ~ If not, see <http://www.gnu.org/licenses/>.
+  ~
+  -->
+
+<!-- MIPster logo in the ring badge shared by the Android Auto Now Playing buttons. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp"
+    android:height="24dp"
+    android:viewportWidth="24"
+    android:viewportHeight="24">
+  <path
+      android:fillColor="#FF000000"
+      android:fillType="evenOdd"
+      android:pathData="M2,12 A10,10 0 1,0 22,12 A10,10 0 1,0 2,12 Z M3.6,12 A8.4,8.4 0 1,0 20.4,12 A8.4,8.4 0 1,0 3.6,12 Z"/>
+  <group android:scaleX="0.6" android:scaleY="0.6" android:translateX="4.8" android:translateY="4.8">
+    <path
+        android:fillColor="#FF000000"
+        android:pathData="M11.95 1.55L21.05 1.55A0.94 0.94 0 0 1 21.98 2.48L21.98 4.12A0.94 0.94 0 0 1 21.05 5.06L11.95 5.06A0.94 0.94 0 0 1 11.02 4.12L11.02 2.48A0.94 0.94 0 0 1 11.95 1.55zM11.02 7.27Q11.02 6.42 11.95 6.42L14.62 6.42zM16.73 6.42L21.05 6.42A0.94 0.94 0 0 1 21.98 7.36L21.98 9.05A0.94 0.94 0 0 1 21.05 9.98L16.73 9.98zM11.95 11.3L13.64 11.3L13.64 14.86L11.95 14.86A0.94 0.94 0 0 1 11.02 13.92L11.02 12.23A0.94 0.94 0 0 1 11.95 11.3zM16.73 11.3L21.05 11.3A0.94 0.94 0 0 1 21.98 12.23L21.98 13.92A0.94 0.94 0 0 1 21.05 14.86L16.73 14.86zM6.23 8.77L16.08 7.03L16.08 19.22L14.3 19.22L14.3 9.42L8.02 10.31L8.02 20.53L6.23 20.53zM2.16 21.46A2.44 1.69 -20 1 1 6.75 19.79A2.44 1.69 -20 1 1 2.16 21.46zM10.27 20.1A2.44 1.69 -20 1 1 14.85 18.43A2.44 1.69 -20 1 1 10.27 20.1z"/>
+  </group>
+</vector>
