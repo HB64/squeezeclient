@@ -516,7 +516,6 @@ class MediaService :
             .add(SessionCommand(SESSION_ACTION_POWER, Bundle.EMPTY))
             .add(SessionCommand(SESSION_ACTION_DISCONNECT, Bundle.EMPTY))
             .add(SessionCommand(SESSION_ACTION_START_MIX, Bundle.EMPTY))
-            .add(SessionCommand(SESSION_ACTION_START_RANDOM_MIX, Bundle.EMPTY))
         for (slot in 1..prefs.androidAutoPresetButtonCount) {
             sessionCommandsBuilder.add(SessionCommand(presetSessionAction(slot), Bundle.EMPTY))
         }
@@ -586,11 +585,6 @@ class MediaService :
 
             SESSION_ACTION_START_MIX -> {
                 startMix()
-                SessionResult.RESULT_SUCCESS
-            }
-
-            SESSION_ACTION_START_RANDOM_MIX -> {
-                startRandomTrackMix()
                 SessionResult.RESULT_SUCCESS
             }
 
@@ -1052,8 +1046,7 @@ class MediaService :
     private enum class MixMode { SugarCube, RandomFlow, Mipster, Random }
 
     // The first button starts a mix with the plugin that is active for the current player
-    // (see resolveMixMode). Without an active plugin it is the random mix button, and the
-    // separate second button is dropped so there are no duplicates.
+    // (see resolveMixMode), or Lyrion's random mix if none is active.
     private fun buildCustomLayout(): List<CommandButton> {
         val mixButton = CommandButton.Builder(CommandButton.ICON_UNDEFINED)
             .setDisplayName(
@@ -1074,17 +1067,7 @@ class MediaService :
             )
             .setSessionCommand(SessionCommand(SESSION_ACTION_START_MIX, bundleOf()))
             .build()
-        val randomButton = CommandButton.Builder(CommandButton.ICON_UNDEFINED)
-            .setDisplayName("Random Mix")
-            .setCustomIconResId(R.drawable.ic_shuffle_song_24dp)
-            .setSessionCommand(SessionCommand(SESSION_ACTION_START_RANDOM_MIX, bundleOf()))
-            .build()
-        val mixButtons = if (mixMode == MixMode.Random) {
-            listOf(mixButton)
-        } else {
-            listOf(mixButton, randomButton)
-        }
-        return mixButtons + presetCommandButtons()
+        return listOf(mixButton) + presetCommandButtons()
     }
 
     // Decides which mix the first button stands for on this player: SugarCube when installed
@@ -1200,7 +1183,6 @@ class MediaService :
         private const val SESSION_ACTION_POWER = "power"
         private const val SESSION_ACTION_DISCONNECT = "disconnect"
         private const val SESSION_ACTION_START_MIX = "start_mix"
-        private const val SESSION_ACTION_START_RANDOM_MIX = "start_random_mix"
         private const val SESSION_ACTION_PRESET_PREFIX = "preset_"
 
         private const val NODE_ROOT = "root"
