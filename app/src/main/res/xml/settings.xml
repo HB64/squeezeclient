@@ -133,7 +133,7 @@
             android:title="@string/settings_aa_preset_button_count_title"
             android:defaultValue="0"
             app:min="0"
-            android:max="5"
+            android:max="6"
             app:updatesContinuously="true" />
 
     </PreferenceCategory>

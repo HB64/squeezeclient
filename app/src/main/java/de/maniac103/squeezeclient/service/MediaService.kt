@@ -83,6 +83,7 @@ import de.maniac103.squeezeclient.extfuncs.putLastSelectedPlayer
 import de.maniac103.squeezeclient.extfuncs.volumeStepSize
 import de.maniac103.squeezeclient.service.localplayer.LocalPlaybackService
 import de.maniac103.squeezeclient.model.JiveAction
+import de.maniac103.squeezeclient.model.JiveActions
 import de.maniac103.squeezeclient.model.PagingParams
 import de.maniac103.squeezeclient.model.PlayerId
 import de.maniac103.squeezeclient.model.PlayerStatus
@@ -647,8 +648,10 @@ class MediaService :
             parentId == NODE_PLUGINS -> fetchPluginChildren(playerId)
             parentId.startsWith(PLUGIN_PREFIX) -> {
                 selectMixPlugin(playerId, parentId)
-                listOf(pluginConfirmItem(parentId))
+                listOf(pluginConfirmItem(parentId)) + pluginSettingItems(playerId, parentId)
             }
+            parentId.startsWith(SETTING_PREFIX) -> pluginChoiceItems(playerId, parentId)
+            parentId.startsWith(CHOICE_PREFIX) -> listOf(applyPluginChoice(playerId, parentId))
             parentId == NODE_SUGGESTED -> fetchSuggestedChildren(playerId)
             parentId == NODE_FAVORITES -> fetchFavoriteChildren(playerId)
             parentId.startsWith(FAVORITE_PREFIX) -> fetchFavoriteActionChildren(playerId, parentId)
@@ -677,6 +680,8 @@ class MediaService :
             mediaId.startsWith(PLUGIN_PREFIX) ->
                 runCatching { pluginItem(MixMode.valueOf(mediaId.removePrefix(PLUGIN_PREFIX)), false) }
                     .getOrNull()
+            mediaId.startsWith(SETTING_PREFIX) || mediaId.startsWith(CHOICE_PREFIX) ->
+                folderItem(mediaId, pluginSettingCache[mediaId]?.title ?: "", null)
             mediaId.startsWith(FAVORITE_PREFIX) ->
                 favoriteItemCache[mediaId]?.toBrowsableMediaItem(mediaId)
             else -> favoriteActionCache[mediaId]?.let {
@@ -740,6 +745,131 @@ class MediaService :
                     .build()
             )
             .build()
+    }
+
+    private class PluginSetting(
+        val title: String,
+        val goAction: JiveAction?,
+        val choices: JiveActions.Choices?
+    )
+
+    private class PluginChoice(val settingId: String, val label: String, val action: JiveAction)
+
+    private val pluginSettingCache = mutableMapOf<String, PluginSetting>()
+    private val pluginChoiceCache = mutableMapOf<String, PluginChoice>()
+
+    private fun folderItem(mediaId: String, title: String, subtitle: String?) = MediaItem.Builder()
+        .setMediaId(mediaId)
+        .setMediaMetadata(
+            MediaMetadata.Builder()
+                .setTitle(title)
+                .setSubtitle(subtitle)
+                .setIsBrowsable(true)
+                .setIsPlayable(false)
+                .build()
+        )
+        .build()
+
+    private fun infoItem(mediaId: String, title: String) = MediaItem.Builder()
+        .setMediaId(mediaId)
+        .setMediaMetadata(
+            MediaMetadata.Builder()
+                .setTitle(title)
+                .setIsBrowsable(false)
+                .setIsPlayable(false)
+                .build()
+        )
+        .build()
+
+    private fun pluginMenuCommand(mode: MixMode) = when (mode) {
+        MixMode.SugarCube -> listOf("sugarcube", "menu")
+        MixMode.RandomFlow -> listOf("randomflow", "menu")
+        MixMode.Mipster -> listOf("mipster", "menu")
+        MixMode.Random -> null
+    }
+
+    // Only list-type settings (Filter, Recipe, Mood, ...); numeric and on/off ones are skipped.
+    private suspend fun pluginSettingItems(playerId: PlayerId, mediaId: String): List<MediaItem> {
+        val mode = runCatching { MixMode.valueOf(mediaId.removePrefix(PLUGIN_PREFIX)) }
+            .getOrNull() ?: return emptyList()
+        val cmd = pluginMenuCommand(mode) ?: return emptyList()
+        return try {
+            val menu = connectionHelper.fetchItemsForAction(
+                playerId,
+                JiveAction(cmd, emptyMap(), null, null),
+                PagingParams.All,
+                false
+            )
+            menu.items.mapNotNull { item ->
+                val actions = item.actions ?: return@mapNotNull null
+                val choices = actions.choices
+                val isList = actions.goAction != null ||
+                    (choices != null && choices.items.size > 2 &&
+                        choices.items.count { it.title.firstOrNull()?.isDigit() == true } * 2 <
+                        choices.items.size)
+                if (!isList) return@mapNotNull null
+                val id = "$SETTING_PREFIX${mode.name}_${item.listPosition}"
+                pluginSettingCache[id] = PluginSetting(item.title, actions.goAction, choices)
+                val current = choices?.let { it.items.getOrNull(it.selectedIndex)?.title }
+                folderItem(id, item.title, current)
+            }
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            Log.w(TAG, "Fetching plugin settings failed", e)
+            emptyList()
+        }
+    }
+
+    private suspend fun pluginChoiceItems(playerId: PlayerId, settingId: String): List<MediaItem> {
+        val setting = pluginSettingCache[settingId] ?: return emptyList()
+        val entries = mutableListOf<Triple<String, Boolean, JiveAction>>()
+        try {
+            if (setting.goAction != null) {
+                connectionHelper.fetchItemsForAction(playerId, setting.goAction, PagingParams.All, false)
+                    .items.forEach { sub ->
+                        val a = sub.actions
+                        val action = a?.doAction ?: a?.radio?.action ?: a?.goAction
+                        if (action != null) entries += Triple(sub.title, a?.radio?.state == true, action)
+                    }
+            } else if (setting.choices != null) {
+                setting.choices.items.forEachIndexed { i, c ->
+                    entries += Triple(c.title, i == setting.choices.selectedIndex, c.action)
+                }
+            }
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            Log.w(TAG, "Fetching plugin choices failed", e)
+        }
+        return entries.mapIndexed { i, (label, selected, action) ->
+            val id = "$CHOICE_PREFIX${settingId.removePrefix(SETTING_PREFIX)}_$i"
+            pluginChoiceCache[id] = PluginChoice(settingId, label, action)
+            folderItem(id, if (selected) "\u2713 $label" else label, null)
+        }
+    }
+
+    // Opening a choice applies it (AA needs browsable folders for actions) and shows a result line.
+    private suspend fun applyPluginChoice(playerId: PlayerId, choiceId: String): MediaItem {
+        val choice = pluginChoiceCache[choiceId]
+            ?: return infoItem("${choiceId}_done", "Not available")
+        val ok = try {
+            connectionHelper.executeAction(playerId, choice.action)
+            true
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            Log.w(TAG, "Applying plugin choice failed", e)
+            false
+        }
+        if (ok && ::mediaSession.isInitialized) {
+            mediaSession.notifyChildrenChanged(choice.settingId, Int.MAX_VALUE, null)
+        }
+        val name = pluginSettingCache[choice.settingId]?.title ?: ""
+        return infoItem(
+            "${choiceId}_done",
+            if (ok) "Set: $name: ${choice.label}" else "Failed: $name"
+        )
     }
 
     private suspend fun isPluginAvailable(playerId: PlayerId, mode: MixMode) = when (mode) {
@@ -1190,6 +1320,8 @@ class MediaService :
         private const val NODE_SUGGESTED = "suggested"
         private const val NODE_PLUGINS = "plugins"
         private const val PLUGIN_PREFIX = "plugin_"
+        private const val SETTING_PREFIX = "pset_"
+        private const val CHOICE_PREFIX = "pchoice_"
         private const val FAVORITE_PREFIX = "fav_"
         // Google's own guideline for AA recommendations: offer around 10 items.
         private const val MAX_SUGGESTED_ITEMS = 10
