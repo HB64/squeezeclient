@@ -1,0 +1,6 @@
+- Android Auto: the first mix button follows the active mix plugin
+  (SugarCube, Random Flow or MIPster)
+- Android Auto: new "Mix plugin" folder to switch plugin and pick its
+  filter, recipe or mood lists while driving
+- Android Auto: up to 6 preset buttons
+- Optional volume attenuation for direct streams on the local player
